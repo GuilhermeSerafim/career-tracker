@@ -1,0 +1,6 @@
+# Preservar os bytes dos novos SQLs cujo hash é registrado pelo banco local.
+# O modelo 001 já aplicado mantém seu tratamento anterior de fim de linha.
+supabase/schemas/002_security.sql text eol=lf
+supabase/migrations/20261116010237_restrict_career_data_to_configured_owner.sql text eol=lf
+# Fixture arquivística: preservar BOM e CRLF inclusive em outros checkouts.
+tests/fixtures/legacy.csv -text whitespace=cr-at-eol

@@ -1,0 +1,3 @@
+﻿id,empresa,cargo,plataforma,codigo_vaga,chave_vaga,url_original,links_alternativos,status_envio,data_envio,evidencia_envio,cv_enviado,etapa,ordem_ciclo,fonte,observacoes,registrado_em
+V901,"Empresa, Exemplo",Backend,ATS Exemplo,42,chave42,https://jobs.example.org/42,"file:///privado/a.pdf | javascript:alert(1)",confirmado,,Relato fictício,"CV A.pdf | CV B.pdf","Talvez entrevista, sem confirmação",1,Fixture,"  ação 🧭 ""citada""
+segunda linha  ",2026-11-10

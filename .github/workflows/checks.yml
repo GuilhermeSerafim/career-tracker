@@ -1,0 +1,52 @@
+name: Verificações privadas com dados sintéticos
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      source:
+        image: postgres@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7 # PostgreSQL 17.12
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-source
+          POSTGRES_DB: career_tracker_test
+        ports: ['55432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      restore:
+        image: postgres@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7 # PostgreSQL 17.12
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-restore
+          POSTGRES_DB: career_tracker_restore_test
+        ports: ['55434:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      LOCAL_TEST_DATABASE_URL: postgresql://postgres:disposable-ci-source@127.0.0.1:55432/career_tracker_test
+      LOCAL_RESTORE_TEST_DATABASE_URL: postgresql://postgres:disposable-ci-restore@127.0.0.1:55434/career_tracker_restore_test
+      VITE_SUPABASE_URL: http://127.0.0.1:54321
+      VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_synthetic_e2e_only
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: '22.18.0'
+          cache: npm
+      - run: npm install --global npm@10.9.3
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run db:local:apply
+      - run: npm run db:local:check
+      - run: npm run test:integration
+      - run: npm run build
+      - run: npm run build:check
+      - run: npm run test:e2e
+      - run: node --import tsx scripts/audit-local.ts
+      # No trace, screenshots, database dumps or credential-bearing artifacts uploaded.

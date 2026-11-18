@@ -1,0 +1,20 @@
+:root {
+  --blue: #0131cd;
+  --blue-deep: #00279f;
+  --lime: #b9fc01;
+  --ink: #172033;
+  --muted: #526078;
+  --surface: #fff;
+  --background: #f5f7fb;
+  --line: #d9dfeb;
+  --control-line: #77849c;
+  --danger: #a51f35;
+  --font-body: 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --font-heading: 'Arial Black', 'Segoe UI', sans-serif;
+  font: 16px/1.6 var(--font-body);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--background);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}

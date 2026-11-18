@@ -1,0 +1,56 @@
+.today-intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.today-intro h1 { max-width: 11ch; }
+.today-intro > div { min-width: 0; max-width: 100%; }
+.today-register { max-width: 100%; overflow-wrap: anywhere; }
+.today-register { display: inline-flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 48px; padding: 13px 18px; background: var(--blue); color: white; border-radius: 7px; font-weight: 700; text-decoration: none; flex-shrink: 0; }
+.today-register:hover { background: var(--blue-deep); }
+.today-goal { padding: 30px 36px; display: grid; grid-template-columns: 1.1fr 1fr; align-items: center; gap: 36px; background: var(--lime); border: 1px solid #a2da04; border-radius: 12px; }
+.today-goal .eyebrow { color: var(--ink); }
+.today-goal h2 { margin: 12px 0 0; font-size: 21px; }
+.today-count { font-size: 24px; font-variant-numeric: tabular-nums; line-height: 1.1; margin: 12px 0; }
+.today-count strong { font: 900 88px/.95 var(--font-heading); letter-spacing: -.065em; margin-right: 6px; }
+.today-goal p:last-child { margin-bottom: 0; }
+.today-goal-detail > p:first-child { font-weight: 650; }
+.today-goal progress { display: block; width: 100%; height: 12px; accent-color: var(--blue); margin: 20px 0; border: 0; border-radius: 10px; overflow: hidden; background: #17203320; }
+.today-goal progress::-webkit-progress-bar { background: #17203320; }
+.today-goal progress::-webkit-progress-value { background: var(--blue); }
+.today-zone { font-size: 12px; }
+.today-coverage { color: var(--muted); font-size: 14px; margin: 16px 0 0; }
+.today-empty { padding: 24px; margin: 24px 0 0; border: 1px dashed var(--control-line); border-radius: 8px; }
+.today-panel { min-width: 0; padding: 28px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.today-panel h2 { font-size: 26px; margin: 12px 0 22px; }
+.today-actions { margin-top: 28px; }
+.today-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.today-total { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.today-tasks, .today-events { list-style: none; padding: 0; margin: 0; }
+.today-tasks > li { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 22px; padding: 18px 0; border-top: 1px solid var(--line); }
+.today-deadline { display: grid; align-content: center; gap: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.today-due { font-weight: 750; color: var(--blue); }
+.today-due-overdue { color: var(--danger); }
+.today-due-no_exact_deadline { color: var(--muted); }
+.today-task-copy { min-width: 0; }
+.today-task-link { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; font-weight: 750; text-decoration: none; overflow-wrap: anywhere; }
+.today-task-link:hover { text-decoration: underline; }
+.today-task-link > span { flex-shrink: 0; }
+.today-contact-trigger { width: 100%; padding: 0; border: 0; background: transparent; color: var(--blue); text-align: left; border-radius: 0; }
+.today-contact-trigger:hover { background: transparent; text-decoration: underline; }
+.today-contact { margin-top: 12px; padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--background); overflow-wrap: anywhere; }
+.today-contact h3 { margin: 0 0 12px; font-size: 16px; }
+.today-contact p { white-space: pre-wrap; }
+.today-contact ul { list-style: none; padding: 0; margin: 0; }
+.today-application { display: block; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.today-id { font-size: 12px; white-space: nowrap; margin-left: 6px; }
+.today-activity { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 24px; }
+.today-muted { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 0; }
+.today-panel > .today-muted { margin-bottom: 18px; }
+.today-events > li { padding: 16px 0; border-top: 1px solid var(--line); }
+.today-event-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.today-event-heading .text-action { gap: 12px; }
+.today-state { color: var(--muted); font-size: 12px; }
+.today-result { margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; }
+.today-dates { margin: 12px 0 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.7; }
+.today-list-note { margin-top: 16px; }
+.today-error h2 { margin-top: 0; }
+@media (max-width: 1200px) { .today-intro { align-items: flex-start; flex-direction: column; } .today-activity { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 850px) { .today-goal { grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 28px; } .today-tasks > li { grid-template-columns: minmax(0, 1fr); gap: 6px; } .today-deadline { display: flex; gap: 12px; flex-wrap: wrap; } }
+@media (max-width: 700px) { .today-panel { padding: 24px 20px; } .today-goal { padding: 26px 24px; } .today-count strong { font-size: 76px; } .today-section-heading { align-items: flex-start; } .today-panel h2 { font-size: 24px; } .today-total { padding-top: 3px; } }

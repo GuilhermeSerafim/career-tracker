@@ -1,0 +1,7 @@
+﻿import type { ChartModel, Explanation } from './options';
+export function ChartTable({ model, onSelect }: { model: ChartModel; onSelect(selection: Explanation): void }) {
+  return <div className="analytics-table-region" role="region" aria-label={`Tabela: ${model.title}`} tabIndex={0}><table>
+    <caption>{model.title} · dados e candidaturas</caption><thead><tr><th scope="col">{model.temporal ? 'Data / início da semana' : 'Categoria'}</th><th scope="col">Candidaturas</th>{model.temporal && <><th scope="col">Meta</th><th scope="col">Diferença</th></>}<th scope="col">Numerador / denominador e contexto</th><th scope="col">Registros</th></tr></thead>
+    <tbody>{model.rows.map((row) => <tr key={row.identity}><th scope="row">{row.label}</th><td>{row.value}</td>{model.temporal && <><td>{row.goal}</td><td>{row.difference}</td></>}<td>{row.detail}{row.metrics && <details><summary>Conversões deste grupo</summary><ul>{row.metrics.map((metric) => <li key={metric.label}><strong>{metric.label}</strong>: {metric.text}<button onClick={() => onSelect(metric.explanation)} aria-label={`Ver candidaturas com ${metric.label}: ${row.actionLabel ?? row.label}`}>Ver candidaturas com {metric.label}</button></li>)}</ul></details>}</td><td><button onClick={() => onSelect(row.explanation)} aria-label={`Ver candidaturas: ${row.actionLabel ?? row.label}`}>Ver candidaturas</button></td></tr>)}</tbody>
+  </table>{!model.rows.length && <p>Sem dados para esta população.</p>}</div>;
+}
