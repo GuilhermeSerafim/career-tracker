@@ -4,11 +4,13 @@ Aplicativo em português para acompanhar candidaturas, próximas ações e revis
 
 ## Usar o aplicativo
 
-- **Hoje** reúne os envios do dia e as tarefas pendentes. Ao registrar um envio, informe a data com a precisão conhecida e guarde a evidência.
-- **Vagas** permite salvar oportunidades, confirmar candidaturas, atualizar etapas, registrar retornos e acompanhar contatos e tarefas.
+- **Hoje** reúne os envios do dia e as tarefas pendentes. Ao registrar um envio, informe a data com a precisão conhecida e guarde a evidência. Datas e tarefas ficam no aplicativo, sem notificações de calendário.
+- **Vagas** permite salvar oportunidades, confirmar candidaturas, registrar etapas no mesmo processo e acompanhar contatos e tarefas.
 - **Análises** mostra a população, a cobertura e os registros usados em cada indicador. Selecione um resultado para consultar as candidaturas correspondentes.
-- **Revisões** reúne lotes e versões. O fechamento preserva os membros e o resultado do período. Uma retificação guarda o motivo e a versão anterior.
+- **Revisões** reúne lotes de 30 candidaturas únicas confirmadas e elegíveis no ciclo. O fechamento preserva os membros e o resultado do período. Uma retificação guarda o motivo e a versão anterior.
 - **Conta → Configurações** concentra preferências e credenciais de agente com escopos e revogação.
+
+Consulte o [guia de operação](docs/operations.md) para recuperar acesso, corrigir registros, gerenciar o agente e guardar cópias privadas.
 
 ## Desenvolvimento local
 
@@ -19,13 +21,13 @@ npm ci
 npm run dev
 ```
 
-Abra `http://127.0.0.1:5173`. O Vite encaminha a API para `127.0.0.1:3001`. Para entrar, configure o Auth e o proprietário e disponibilize o PostgreSQL para o servidor. O arquivo `.env.example` lista as variáveis. O Vite lê `.env.local`. Os comandos de servidor recebem a configuração pelo ambiente do processo.
+Abra `http://127.0.0.1:5173`. O Vite encaminha a API para `127.0.0.1:3001`. Prepare o Auth, o proprietário e o PostgreSQL com os comandos do [guia de operação](docs/operations.md#executar-localmente). O arquivo `.env.example` lista as variáveis. O Vite lê `.env.local`. Os comandos de servidor recebem a configuração pelo ambiente do processo.
 
 Somente `VITE_SUPABASE_URL` e `VITE_SUPABASE_PUBLISHABLE_KEY` pertencem ao navegador. A API verifica a sessão e usa a conexão privada `DATABASE_URL` como `career_api`. Consulte o [guia de segurança](docs/security.md) para os papéis, RLS, TLS e o provisionamento local do proprietário.
 
 ## Verificar com dados fictícios
 
-Com Docker disponível e as portas 55432, 55434 e 4173 livres, `npm run verify:local` instala as dependências, cria dois bancos descartáveis e executa verificações de tipos, lint, testes unitários, integração, build, privacidade e navegador. Consulte o [roteiro de verificação](docs/verification.md) para os pré-requisitos, comandos individuais e limites da evidência local.
+Com Docker disponível e as portas 55432, 55434 e 4173 livres, `npm run verify:local` instala as dependências, cria dois bancos descartáveis e executa verificações de tipos, lint, testes unitários, integração, build, privacidade e navegador. Execute `npm run test:fixture-maintenance` separadamente para testar a manutenção de registros técnicos. O [roteiro de verificação](docs/verification.md) reúne pré-requisitos e evidências da CI pública.
 
 ## Conferir o conteúdo para publicação
 
@@ -43,7 +45,7 @@ A revisão editorial cobre também o contexto de exemplos e documentos. A fixtur
 
 ## Referências
 
-- [Produto e arquitetura](docs/design.md)
+- [Produto e arquitetura](docs/design.md) e [dicionário de dados](docs/data-dictionary.md)
 - [API HTTP](docs/http-api.md) e [instruções para agentes](docs/agent-api.md)
 - [Prévia do legado](docs/legacy-preview.md) e [exportação e recuperação privadas](docs/private-transfers.md)
 - [Candidaturas](docs/application-services.md), [atividades](docs/activity-services.md) e [revisões](docs/reviews.md)

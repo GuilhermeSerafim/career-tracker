@@ -1,40 +1,43 @@
-# Career agent API
+# API para agentes de carreira
 
-Use this API only to read and record the owner's authorized career work. It records reported actions; it does not send applications or recruiter messages, scrape URLs, execute SQL, provision resources, or monitor in the background. Obtain a credential through a private channel after owner issuance. Never put credentials in chat, documents, source control, logs, command arguments, or example files.
+Use a API para consultar e registrar o trabalho de carreira autorizado pelo proprietário. O aplicativo registra ações informadas. Envio de candidaturas, mensagens a recrutadores, coleta de portais, execução de SQL, provisionamento e monitoramento em segundo plano ficam fora da integração. As tarefas registradas são internas ao aplicativo.
 
-## Credential lifecycle
+## Emissão e revogação
 
-In Settings, the authenticated owner chooses a label, scopes and optional expiry. The browser creates a UUID and 32 random bytes, hashes those bytes with SHA-256, and sends only the hash and safe metadata. The token format is `ct_agent_<uuid>.<base64url-secret>`. The UUID is also the creation `clientId`; the displayed prefix is its first eight characters, unrelated to the secret.
+Em **Conta → Configurações → Acesso do agente**, o proprietário escolhe o nome, os escopos e uma expiração opcional. O navegador gera um UUID e 32 bytes aleatórios. Envia o SHA-256 do segredo e os metadados necessários. O token tem o formato `ct_agent_<uuid>.<base64url-secret>`. O UUID também é o `clientId` da criação. O prefixo exibido contém os oito primeiros caracteres do UUID.
 
-The browser shows the complete token once, after confirmed creation. An uncertain 503 can repeat the exact body and key while the same authenticated screen remains open. Hiding it, navigating away, session expiry, logout, owner switch, reload or closing the tab discards the secret. **Discarding browser memory does not revoke a credential: creation may already have committed.** Reopen Settings, reconcile the label/ID/prefix with the owner-only catalog, explicitly revoke the old credential, and then issue a replacement. No server-side retrieval exists. Runtime memory is transient, not a claim of secure erasure from browser/process memory.
+A tela exibe o token completo uma vez após a criação confirmada. Guarde-o no armazenamento privado do agente. Mantenha-o fora de chats, arquivos de exemplo, documentos, Git, logs e argumentos de comandos. Se a emissão ficar incerta e a mesma tela autenticada continuar aberta, use **Repetir mesma criação** para reenviar o mesmo corpo e chave. Ocultar, navegar, recarregar, sair da conta, expirar a sessão, mudar de proprietário ou fechar a aba encerra a exibição. A credencial pode continuar ativa. Para recuperar o acesso do agente, releia o catálogo, confira nome, ID e prefixo, revogue a credencial anterior e emita outra. A aplicação não recupera o segredo para exibição posterior.
 
-Owner-only `GET /api/v1/agent-credentials?limit=20` returns `{items,nextCursor}` with ID, version, label, prefix, scopes, expiry, revocation and creation timestamp. `limit` is 1–100; pass the opaque returned `cursor` for the next page. The catalog includes expired/revoked credentials, excludes hashes, and accepts no extra filters. Credential creation/revocation use the existing `/commands` operations; revocation requires the credential's current `expectedVersion`. Same creation `clientId` and intention do not create another credential, even under a new retry key.
+`GET /api/v1/agent-credentials?limit=20` é exclusivo do proprietário e devolve `{items,nextCursor}`. Cada item inclui ID, versão, nome, prefixo, escopos, expiração, revogação e data de criação, mesmo se a credencial estiver revogada ou expirada. O limite vai de 1 a 100. Use `cursor` com o valor opaco devolvido para avançar. O catálogo exclui hashes e aceita apenas esses parâmetros. `create_agent_credential` e `revoke_agent_credential` usam `/commands`. A revogação requer o `expectedVersion` atual da credencial. Repetir a criação com a mesma intenção e `clientId` mantém a credencial existente, inclusive sob nova chave HTTP.
 
-## Scope map
+## Escopos
 
-| Scope | Allowed operations |
+| Escopo | Operações autorizadas |
 | --- | --- |
-| `career:read` | GET applications (list/detail), contacts (bounded list/detail), today, analytics, batches (list/detail), review JSON, settings, resume-refs, health |
-| `career:write` | `save_application`, `create_resume_ref`, `confirm_submission`, `update_application`, `record_event`, `correct_event`, `save_contact`, `save_task`, `complete_task`, `archive_application`, `restore_application`, `resolve_duplicate`, `invalidate_submission` |
-| `career:reviews` | `close_review`, `revise_review` |
-| `career:export` (optional) | GET exports with `format=json` or `format=csv`; selected review with `format=markdown` |
+| `career:read` | Consultar candidaturas e contatos por lista ou ID, Hoje, análises, lotes e revisões em JSON, configurações, referências de CV e saúde. |
+| `career:write` | `save_application`, `create_resume_ref`, `confirm_submission`, `update_application`, `record_event`, `correct_event`, `save_contact`, `save_task`, `complete_task`, `archive_application`, `restore_application`, `resolve_duplicate`, `invalidate_submission`. |
+| `career:reviews` | `close_review` e `revise_review`. |
+| `career:export` | Exportar em `format=json` ou `format=csv` e baixar a revisão selecionada com `format=markdown`. Conceda somente quando necessário. |
 
-Each operation needs its own scope; write/reviews/export do not imply read. Review JSON does not imply Markdown export. `restore_application` only unarchives a career application; it grants no backup restoration capability. `start_cycle`, `update_settings`, credential management, imports (including preview/apply), restore preview, owner/schema management and provisioning remain owner-only. Unknown operations are closed. Inputs cannot supply ownerId, actor, source, SQL or alternative credentials.
+Cada escopo é independente. `restore_application` restaura um registro arquivado. A administração de credenciais, `start_cycle`, `update_settings`, a prévia e a aplicação de importação e a prévia de recuperação exigem sessão do proprietário. A aplicação de recuperação exige manutenção local separada. O servidor determina a identidade do proprietário, o ator e a origem da operação. O comando só aceita os campos do contrato. [Rotas e permissões](http-api.md) · [Comandos compartilhados](../shared/commands.ts)
 
-Opaque token verification uses an exact-ID internal lookup for the configured owner under the maintenance gate, then a constant-length hash comparison including the missing-row path. Business transactions recheck expiry, revocation and the required current scope while holding a credential SHARE row lock. Revocation takes UPDATE: a transaction that acquired SHARE can finish before revocation; after revocation commits, later transactions fail. A previously authenticated object cannot bypass this check. Invalid/missing/expired/revoked credentials return generic 401, valid insufficient scopes return 403, and unavailable dependencies/maintenance return 503.
+A autenticação consulta a credencial exata do proprietário configurado e compara o hash em tempo constante. A transação de negócio revalida validade, escopo e revogação sob lock compartilhado na linha da credencial. Uma transação que já obteve esse lock pode terminar antes da revogação. Após o commit da revogação, as transações seguintes falham. Credencial ausente, inválida, expirada ou revogada recebe 401 genérico. Escopo insuficiente recebe 403. Indisponibilidade ou manutenção recebe 503.
 
-## CLI transport and retries
+## Cliente local e repetição segura
 
-`npm run agent --silent` reads `CAREER_AGENT_TOKEN` and `CAREER_API_URL` from the private process environment. The URL is an HTTPS origin (loopback HTTP is allowed for local tests); redirects and URL credentials are rejected. Stdin is a UTF-8 JSON byte stream, up to 256 KiB. No positional command or credential arguments are accepted. A read takes `{ "method": "GET", "path": "/api/v1/contacts?limit=20" }`. A mutation takes `{ "command": { ... }, "idempotencyKey": "a-stable-intention-key" }`.
+`npm run agent --silent` lê `CAREER_AGENT_TOKEN` e `CAREER_API_URL` do ambiente privado do processo. Use uma origem HTTPS. HTTP em loopback serve para teste local. O cliente recusa redirects, credenciais na URL e argumentos posicionais. Envie um JSON UTF-8 de até 256 KiB pela entrada padrão. Uma consulta pode ser `{ "method": "GET", "path": "/api/v1/contacts?limit=20" }`. Uma gravação usa `{ "command": { ... }, "idempotencyKey": "a-stable-intention-key" }`. Em HTTP direto, envie o comando como corpo de `POST /api/v1/commands`, `Content-Type: application/json`, a chave no cabeçalho `Idempotency-Key` e a credencial em `Authorization` no formato Bearer. [Cliente local](../scripts/agent-client.ts) · [Contrato HTTP](http-api.md)
 
-Preserve the complete JSON command, key and `expectedVersion` for an unchanged intention. On 503 or an uncertain network result, retry those same values. On 409, reread the relevant aggregate, compare changes, obtain an explicit corrected intention and use a new key/version; never blindly increment a version or generate new identities to bypass a conflict. 401 needs owner credential reconciliation; 403 needs an owner-approved scope decision. No retry happens automatically.
+- Em 503 ou falha de rede com resultado incerto, repita a chave, o payload e todos os valores de `expectedVersion` do pedido original. O servidor recupera a resposta confirmada se a transação tiver sido gravada.
+- Para uma intenção alterada, use nova chave. Em 409, releia os registros e suas versões, compare o que mudou e reaplique só as alterações autorizadas a partir dos valores atuais, com nova chave. Preserve as identidades dos registros já criados.
+- Em 401, confira a credencial com o proprietário. Em 403, confirme o escopo necessário com ele. O cliente não repete pedidos automaticamente.
 
-The CLI prints only bounded authorized results or a generic status/error, never raw headers or driver errors. It rejects output containing the current credential/token/secret hash instead of rewriting business history. The server excludes credential storage; opaque historical/source keys remain intact. Complete JSON exports are validated again, including manifest integrity. JSON escaping neutralizes terminal controls while preserving decoded multiline evidence/CSV, technology stacks and source/manifest hashes. Command evidence itself is sent unchanged. Keep output private because authorized business data remains private.
+Nas criações com `clientId`, o mapeamento é único por proprietário, tipo de entidade e `clientId`. Ele vale entre atores e chaves HTTP. O mesmo conteúdo resolve a criação existente, enquanto conteúdo diferente para o mesmo `clientId` retorna 409. Preserve o `clientId` e a `Idempotency-Key` no retry do mesmo pedido. Se houver conflito de criação, releia o registro existente e use seu ID e sua versão nas atualizações autorizadas. Gere outro `clientId` só para uma criação realmente nova.
 
-Windows PowerShell native pipelines may default to ASCII. Use a byte-safe pipe from an existing UTF-8 private command file, without putting credentials in arguments:
+A saída contém resultados autorizados e limitados ou um erro seguro. Ela rejeita resultados com o token atual ou com o hash do segredo e valida novamente a integridade de exportações JSON completas. A codificação JSON protege o terminal e preserva, após decodificar, quebras de linha, acentos e hashes. O texto de evidência segue inalterado. Guarde a saída em local privado.
+
+Pipelines nativos do PowerShell podem usar ASCII. Para enviar os bytes de um arquivo de comando UTF-8 privado, use um helper local como este. O processo herda as credenciais do ambiente.
 
 ```js
-// Local helper outside the repository; inherits the private environment.
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 const child = spawn(process.execPath, ['--import', 'tsx', 'scripts/agent-client.ts'], {
@@ -43,12 +46,10 @@ const child = spawn(process.execPath, ['--import', 'tsx', 'scripts/agent-client.
 child.stdin.end(readFileSync(process.env.CAREER_COMMAND_FILE));
 ```
 
-The integration suite exercises native process stdin bytes with accented Portuguese against real local HTTP/PostgreSQL. This guarantees that tested path, not arbitrary shell pipeline encoding.
+## Rotina com dados fictícios
 
-## Recording workflow and fictional examples
-
-1. **Resolve identity before confirming.** Read `/api/v1/applications?view=all&search=Empresa%20Fict%C3%ADcia`, follow pagination and read candidate details. Compare provider/tenant/job-code or verified aliases, track and application instance. Text similarity alone is insufficient. Existing matching identity uses its canonical application ID; new instance/alias decisions need evidence. Strong identity is also deduplicated atomically across browser/agent writers.
-2. **Record the report faithfully.** Preserve the user's original evidence text, source and uncertain date. An unknown date is `{ "precision": "unknown", "value": null }`; never invent a date or change “reported” into “performed by the agent”. The following fictional command records a reported submission for an existing application after a current-version read:
+1. **Conferir a identidade.** Consulte `/api/v1/applications?view=all&search=Empresa%20Fict%C3%ADcia`, inclua arquivados com `filters` igual ao JSON `{"archived":"include"}` codificado na URL, percorra a paginação e leia os resultados plausíveis. Compare provedor, tenant e código ou alias verificado, trilha e ocorrência da candidatura. Use o ID canônico quando houver correspondência. Alias ou nova ocorrência exigem evidência. Semelhança de empresa e cargo pede conferência.
+2. **Confirmar um envio informado.** Preserve o texto da evidência, sua origem e a precisão da data. O exemplo registra um relato de envio para uma candidatura fictícia após leitura da versão atual.
 
 ```json
 {
@@ -63,8 +64,8 @@ The integration suite exercises native process stdin bytes with accented Portugu
 }
 ```
 
-3. **Create an internal next action.** `save_task` uses `target: {clientId}`, versioned `parents: {application,contact}` with at least one non-null parent, and `data: {title,dueDate}`. For example, title `Revisar retorno informado` and unknown dueDate create an internal task. Read optional contacts through `/contacts?limit=20` and `/contacts/<id>` before selecting them. A task is not a calendar notification or recruiter message.
-4. **Classify a substantive response.** `record_event` uses a new `clientId`, the current application reference and `data` from `shared/model.ts`'s `eventFields`, with nullable evidence. A fictional reply inviting an interview can be `kind: "retorno_substantivo", state: "informado"`, unknown `occurredDate`, the literal reply in `sourceText`, nullable `resultText/scoreValue/scoreUnit`, and reported evidence. An automatic receipt is not a substantive response. Assessments/interviews can be recorded separately without counting a planned invitation as a completed event. Corrections use `correct_event` with reason and evidence, retaining history.
-5. **Review the captured batch.** Read `/batches/<id>` and its prospective snapshot, population and gaps. `close_review` takes `batch:{id,expectedVersion}`, nullable narrative and an array of decisions. For an existing review, read its selected JSON version; `revise_review` also needs predecessorId, type (`revision` or `rectification`), reason and evidence. Explain the frozen population separately from later/external results. Optional private Markdown export needs `career:export`; browser saved-file confirmation adds no agent operation.
+3. **Registrar uma próxima ação.** `save_task` recebe `target: {clientId}`, `parents: {application,contact}` com pelo menos um pai e as versões relevantes e `data: {title,dueDate}`. Um exemplo é `Revisar retorno informado` com prazo desconhecido. Leia o catálogo `/api/v1/contacts?limit=20` e consulte `/api/v1/contacts/<id>` antes de vincular um contato.
+4. **Registrar um retorno ou etapa no mesmo processo.** `record_event` recebe novo `clientId`, referência atual da candidatura, `data` conforme `eventFields`, incluindo `data.evidence`, que pode ser `null`. Uma resposta de recrutamento que convida para entrevista pode usar `kind: "retorno_substantivo"`, `state: "informado"`, ocorrência desconhecida e a resposta em `sourceText`. Sem valores informados, `resultText`, `scoreValue` e `scoreUnit` recebem `null`. Um recibo automático tem sua própria categoria. Registre avaliações, entrevistas ou resultados separadamente conforme a evidência. Use `correct_event` com motivo e evidência para corrigir um evento. A atualização de etapa preserva o processo e a contagem do envio.
+5. **Revisar um lote.** Leia `/api/v1/batches/<id>` e confira membros, população e lacunas. `close_review` usa `batch: {id,expectedVersion}`, `narrative` com texto ou `null` e a lista `decisions`. Para criar uma nova versão, encontre a revisão mais recente no lote, releia seu JSON em `/api/v1/reviews/<id>` e use o ID dela em `predecessorId`. `revise_review` exige também o tipo `revision` ou `rectification`, motivo e evidência. Ao relatar o resultado, identifique a população congelada e os resultados posteriores ou externos. Com `career:export`, exporte em `/api/v1/reviews/<id>?format=markdown` a versão selecionada, que pode ser histórica.
 
-All IDs/evidence above are fictional and must be replaced only after an authorized read. Report completion only after a confirmed API result, using returned IDs/versions and what was recorded. Check `shared/commands.ts` for exact strict field contracts; unexpected fields fail validation. This document does not claim production credentials, a live Manager handoff or hosted deployment.
+Substitua os dados fictícios pelos IDs e valores obtidos em leitura autorizada. Só confirme a conclusão após uma resposta de sucesso, indicando os IDs e versões retornados e o que foi registrado. [Campos de evento e datas](../shared/model.ts) · [Dicionário de dados](data-dictionary.md)

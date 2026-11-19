@@ -9,7 +9,7 @@ const groups = [
   ['', '.env.example .gitattributes .gitignore .npmrc .nvmrc README.md eslint.config.js index.html package-lock.json package.json playwright.config.ts tsconfig.app.json tsconfig.base.json tsconfig.json tsconfig.server.json vercel.json vite.config.ts vitest.config.ts vitest.integration.config.ts'],
   ['.github/workflows', 'checks.yml'],
   ['api', 'index.ts'],
-  ['docs', 'activity-services.md agent-api.md application-services.md design.md http-api.md legacy-preview.md operations.md private-transfers.md reviews.md security.md technical-fixture-maintenance.md verification.md'],
+  ['docs', 'activity-services.md agent-api.md application-services.md data-dictionary.md design.md http-api.md legacy-preview.md operations.md private-transfers.md reviews.md security.md technical-fixture-maintenance.md verification.md'],
   ['domain', 'cycles.ts dates.ts export.ts identity.ts import.ts metrics.ts review-markdown.ts'],
   ['scripts', 'agent-client.ts audit-local.ts check-api-runtime.mjs check-build.ts cutover-check.ts export-private.ts import-legacy.ts local-db.ts private-transfer-io.ts provision-owner.ts publication-check.ts restore-private.ts run-e2e.ts verify-local.mjs'],
   ['server', 'agent-policy.ts app.ts auth.ts config.ts database.ts dev.ts errors.ts input.ts logger.ts mutation.ts runtime.ts security-policy.ts unavailable.ts'],
