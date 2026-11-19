@@ -1,8 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
+import { getTransformedRoutes, isHandler } from '@vercel/routing-utils';
 import type pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startApi, startHandler } from '../helpers/api';
+import { createApp } from '../../server/app';
 import { authenticateBearer } from '../../server/auth';
 import { createDatabase } from '../../server/database';
 import { readServerConfig } from '../../server/config';
@@ -19,6 +21,7 @@ import {
 } from '../../domain/import';
 import { SafeError } from '../../server/errors';
 import { createRuntimeApp } from '../../server/runtime';
+import vercelConfig from '../../vercel.json';
 
 const owner = randomUUID();
 const human = { authorization: 'Bearer eyJhIjox.eyJiIjoy.signature' };
@@ -241,6 +244,83 @@ afterAll(async () => {
     await admin.end();
   }
 });
+describe('rewrites hospedados', () => {
+  const { routes, error } = getTransformedRoutes(vercelConfig);
+  let hostedApi: Awaited<ReturnType<typeof startHandler>>;
+
+  function rewrite(pathname: string) {
+    for (const route of routes ?? []) {
+      if (isHandler(route) || !route.dest) continue;
+      const pattern = new RegExp(route.src);
+      if (pattern.test(pathname))
+        return new URL(pathname.replace(pattern, route.dest), 'http://localhost');
+    }
+  }
+
+  beforeAll(async () => {
+    expect(error).toBeNull();
+    const app = createApp({ database, authenticate, logger: () => undefined });
+    hostedApi = await startHandler((request, response) => {
+      const original = new URL(request.url ?? '/', 'http://localhost');
+      const destination = rewrite(original.pathname);
+      if (destination?.pathname !== '/api/index') {
+        response.writeHead(404).end();
+        return;
+      }
+      // A função interna recebe o caminho original e a query resultante do rewrite.
+      for (const [key, value] of destination.searchParams) {
+        if (!original.searchParams.has(key)) original.searchParams.append(key, value);
+      }
+      request.url = original.pathname + original.search;
+      void app(request, response);
+    });
+  });
+  afterAll(async () => { await hostedApi?.close(); });
+
+  it('encaminha somente o namespace da API à função', () => {
+    expect(rewrite('/api')?.pathname).toBe('/api/index');
+    expect(rewrite('/api/v1/imports/preview')?.pathname).toBe('/api/index');
+    expect(rewrite('/apiary')?.pathname).toBe('/index.html');
+    expect(rewrite('/applications/exemplo')?.pathname).toBe('/index.html');
+  });
+
+  it('encaminha leituras autenticadas sem parâmetro de roteamento', async () => {
+    for (const path of ['/api/v1/health', '/api/v1/settings', '/api/v1/applications']) {
+      const result = await hostedApi.request(path, { headers: human });
+      expect(result.status, path).toBe(200);
+      privateResponse(result);
+    }
+    const today = await hostedApi.request('/api/v1/today?date=2026-11-%32%30', { headers: human });
+    expect(today.status).toBe(200);
+    expect(today.json.date).toBe('2026-11-20');
+  });
+
+  it('conserva parâmetros desconhecidos e repetidos para a validação da API', async () => {
+    for (const path of ['/api/v1/health?path=cliente', '/api/v1/applications?limit=1&limit=2']) {
+      const result = await hostedApi.request(path, { headers: human });
+      expect(result.status, path).toBe(400);
+      expect(result.json.error.code).toBe('INVALID_INPUT');
+      privateResponse(result);
+    }
+  });
+
+  it('encaminha POST sem query injetada até o limite de corpo', async () => {
+    const options = {
+      method: 'POST',
+      headers: { ...human, 'content-type': 'application/json' },
+      chunks: ['{', 'x'.repeat(300_000)],
+    };
+    const clean = await hostedApi.request('/api/v1/commands', options);
+    expect(clean.status).toBe(413);
+    expect(clean.json.error.code).toBe('PAYLOAD_TOO_LARGE');
+    privateResponse(clean);
+    const withQuery = await hostedApi.request('/api/v1/commands?path=cliente', options);
+    expect(withQuery.status).toBe(400);
+    expect(withQuery.json.error.code).toBe('INVALID_INPUT');
+    privateResponse(withQuery);
+  });
+});
+
 describe('contratos HTTP em PostgreSQL restrito', () => {
   it('nega sessão ausente, token de agente, outro proprietário e indisponibilidade de Auth', async () => {
     for (const [authorization, status] of [
