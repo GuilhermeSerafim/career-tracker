@@ -24,10 +24,11 @@ import { createImportService } from '../../server/services/imports';
 import { loadAppliedImportStates } from '../../server/repositories/transfers';
 import { activityEventProjection } from '../../server/repositories/activity';
 import { instantNanoseconds } from '../../domain/dates';
+const emptyContinuity = { displayHighWater: '0', retiredClients: [], retiredKeys: [] };
 const owner = randomUUID();
 const unknown = { precision: 'unknown' as const, value: null };
 const time = '2026-11-16T10:20:30.123456+00:00';
-const settingsSnapshot = () => buildSnapshot(owner, [{ formatVersion: 1, table: 'owner_settings', data: { id: randomUUID(), version: 1, createdAt: time, updatedAt: time, dailyGoal: 5, timezone: 'America/Sao_Paulo' } }], time);
+const settingsSnapshot = () => buildSnapshot(owner, [{ formatVersion: 1, table: 'owner_settings', data: { id: randomUUID(), version: 1, createdAt: time, updatedAt: time, dailyGoal: 5, timezone: 'America/Sao_Paulo' } }], time, emptyContinuity);
 async function waitFor(check: () => Promise<boolean>) {
     for (let attempt = 0; attempt < 100; attempt++) {
         if (await check())
@@ -96,7 +97,7 @@ it('drena runtime, mantém manutenção após chunk e permite somente replay aut
     url.password = restorePassword;
     const restoreConfig = localDatabaseConfig(url.href);
     const time = '2026-11-16T10:20:30.123456+00:00';
-    const snapshot = buildSnapshot(owner, [{ formatVersion: 1, table: 'owner_settings', data: { id: randomUUID(), version: 3, createdAt: time, updatedAt: time, dailyGoal: 7, timezone: 'America/Sao_Paulo' } }], time);
+    const snapshot = buildSnapshot(owner, [{ formatVersion: 1, table: 'owner_settings', data: { id: randomUUID(), version: 3, createdAt: time, updatedAt: time, dailyGoal: 7, timezone: 'America/Sao_Paulo' } }], time, emptyContinuity);
     const options = { database: restoreConfig, ownerId: owner, actor, snapshot, mode: 'apply' as const, chunkSize: 1 };
     try {
         expect(await restorePrivate({ ...options, mode: 'preview' })).toMatchObject({ state: 'preview', runId: null });
@@ -308,7 +309,7 @@ it('separa os logins reais e não confia em flags runtime para manutenção, aud
 it('recusa linha estranha durante interrupção mesmo quando dados e ID coincidem com o manifesto', async () => {
     const dst = await runtime(process.env.LOCAL_RESTORE_TEST_DATABASE_URL!, true);
     const base = { id: randomUUID(), version: 1, createdAt: time, updatedAt: time };
-    const snapshot = buildSnapshot(owner, [...settingsSnapshot().entities, { formatVersion: 1, table: 'contacts', data: { ...base, name: 'Contato', notes: null } }], time);
+    const snapshot = buildSnapshot(owner, [...settingsSnapshot().entities, { formatVersion: 1, table: 'contacts', data: { ...base, name: 'Contato', notes: null } }], time, emptyContinuity);
     const options = { database: dst.maintenance, ownerId: owner, actor: dst.actor, snapshot, mode: 'apply' as const, chunkSize: 1 };
     const settings = snapshot.entities.find(row => row.table === 'owner_settings')!;
     const other = randomUUID();
@@ -332,7 +333,7 @@ it('reverte linha e ledger de chunk abortado por perda real da conexão e retoma
     const dst = await runtime(process.env.LOCAL_RESTORE_TEST_DATABASE_URL!, true);
     const contact1 = randomUUID(), contact2 = randomUUID();
     const base = { version: 1, createdAt: time, updatedAt: time };
-    const snapshot = buildSnapshot(owner, [...settingsSnapshot().entities, ...[contact1, contact2].map(id => ({ formatVersion: 1 as const, table: 'contacts' as const, data: { ...base, id, name: 'Contato', notes: null } })), { formatVersion: 1, table: 'tasks', data: { ...base, id: randomUUID(), applicationId: null, contactId: contact1, title: 'Tarefa', dueDate: unknown, completedDate: unknown, status: 'pending' } }], time);
+    const snapshot = buildSnapshot(owner, [...settingsSnapshot().entities, ...[contact1, contact2].map(id => ({ formatVersion: 1 as const, table: 'contacts' as const, data: { ...base, id, name: 'Contato', notes: null } })), { formatVersion: 1, table: 'tasks', data: { ...base, id: randomUUID(), applicationId: null, contactId: contact1, title: 'Tarefa', dueDate: unknown, completedDate: unknown, status: 'pending' } }], time, emptyContinuity);
     let committed!: () => void;
     let advance!: () => void;
     const first = new Promise<void>(r => { committed = r; });
@@ -457,7 +458,7 @@ it('exige reatribuição explícita ao proprietário configurado e preserva a pr
     const dst = await runtime(process.env.LOCAL_RESTORE_TEST_DATABASE_URL!, true);
     const originalOwner = randomUUID();
     const audit = { formatVersion: 1 as const, table: 'audit_log' as const, data: { id: randomUUID(), actor: { kind: 'owner' as const, id: originalOwner }, source: 'fixture', occurredAt: time, entityType: 'owner_settings', entityId: randomUUID(), operation: 'insert', beforeData: null, afterData: { owner_id: originalOwner }, diff: {}, requestId: randomUUID(), createdAt: time } };
-    const snapshot = buildSnapshot(originalOwner, [...settingsSnapshot().entities, audit], time);
+    const snapshot = buildSnapshot(originalOwner, [...settingsSnapshot().entities, audit], time, emptyContinuity);
     const options = { database: dst.maintenance, ownerId: owner, actor: dst.actor, snapshot, mode: 'apply' as const };
     try {
         await expect(restorePrivate(options)).rejects.toThrow();

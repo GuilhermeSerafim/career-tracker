@@ -6,9 +6,9 @@ import { assertAuthenticatedOwner, createHumanAuthenticator, type AuthenticatedO
 import { readServerConfig } from '../server/config';
 import { readPrivateSnapshot } from './private-transfer-io';
 import { MAINTENANCE_LOCK, type Transaction } from '../server/database';
-import { insertTransferRow, readTransferRows } from '../server/repositories/transfers';
+import { insertTransferRow, readDisplayHighWater, readTransferContinuity, readTransferRows } from '../server/repositories/transfers';
 import { preflightTransfer } from '../server/repositories/transfer-preflight';
-import { restorationOrder, transferHash, TRANSFER_TABLES, TransferError, validateSnapshot, type Snapshot } from '../domain/export';
+import { hasDisplayCapacity, restorationOrder, restoreDisplayFloor, transferHash, TRANSFER_TABLES, TransferError, validateSnapshot, type Snapshot } from '../domain/export';
 import { uuidSchema } from '../shared/model';
 export interface RestoreOptions {
     database: pg.ClientConfig;
@@ -20,6 +20,18 @@ export interface RestoreOptions {
     reassignOwner?: string;
     chunkSize?: number;
     afterChunk?: (committed: number) => Promise<void>;
+}
+export class RestoreContinuityRequiredError extends TransferError {
+    constructor() {
+        super();
+        this.message = 'A exportação antiga não inclui a continuidade da origem. Confira uma nova captura antes de ativar o destino.';
+    }
+}
+class RestoreSequenceExhaustedError extends TransferError {
+    constructor() {
+        super();
+        this.message = 'A sequência de candidaturas está esgotada. O destino precisa de capacidade para emitir o próximo identificador.';
+    }
 }
 export class RestoreInterruptedError extends TransferError {
     constructor(readonly runId: string) { super(); }
@@ -46,6 +58,8 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
     const owner = uuidSchema.parse(options.ownerId);
     if (options.reassignOwner === undefined ? snapshot.manifest.sourceOwnerId !== owner : uuidSchema.parse(options.reassignOwner) !== owner)
         throw new TransferError();
+    const continuity = snapshot.manifest.continuity;
+    if (!continuity && options.mode !== 'preview') throw new RestoreContinuityRequiredError();
     const chunkSize = options.chunkSize ?? 100;
     if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 1000 || !['preview', 'apply', 'resume'].includes(options.mode))
         throw new TransferError();
@@ -102,6 +116,8 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
             throw new TransferError();
         if ((await client.query("SELECT id FROM career.creation_requests WHERE entity_type='agent_credential' LIMIT 1")).rowCount)
             throw new TransferError();
+        if (inspectForeign && (await client.query('SELECT 1 FROM career_maintenance.retired_identities WHERE owner_id<>$1 LIMIT 1',[owner])).rowCount)
+            throw new TransferError();
         if (inspectForeign)
             for (const table of TRANSFER_TABLES) {
                 if ((await client.query(`SELECT id FROM career.${table} WHERE owner_id<>$1 LIMIT 1`, [owner])).rowCount)
@@ -124,7 +140,19 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
         await client.query("SELECT set_config('app.restore_run_id',$1,true)", [runId]);
         return run;
     };
+    const usableFloor = async (tx: Transaction, verified: Snapshot) => {
+        const floor = restoreDisplayFloor(verified, BigInt(await readDisplayHighWater(tx)));
+        if (!hasDisplayCapacity(floor)) throw new RestoreSequenceExhaustedError();
+        return floor;
+    };
+    const verifyContinuity = async (tx: Transaction, requiredFloor = restoreDisplayFloor(snapshot)) => {
+        const observed = await readTransferContinuity(tx, owner);
+        if (!continuity || BigInt(observed.displayHighWater) < requiredFloor || !hasDisplayCapacity(BigInt(observed.displayHighWater))
+            || transferHash(observed.retiredClients) !== transferHash(continuity.retiredClients)
+            || transferHash(observed.retiredKeys) !== transferHash(continuity.retiredKeys)) throw new TransferError();
+    };
     const verifyExisting = async (completed = false) => {
+        if (completed) await verifyContinuity(client);
         const ledger = (await client.query<{
             table_name: string;
             row_id: string;
@@ -154,6 +182,7 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
         const initial = await transact(async () => {
             const state = await controls();
             await preflightTransfer(client, owner, snapshot);
+            if (continuity) await usableFloor(client, snapshot);
             if (options.mode === 'resume') {
                 const run = await checkRun();
                 const done = await verifyExisting(run.state === 'completed');
@@ -185,6 +214,8 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
                 persisted = true;
                 return { done, completed: true };
             }
+            if ((await client.query('SELECT 1 FROM career_maintenance.retired_identities LIMIT 1')).rowCount)
+                throw new TransferError();
             if (options.mode === 'preview')
                 return { done: new Set<string>(), completed: false };
             // Nenhuma linha histórica é inserida antes destes controles persistirem.
@@ -194,7 +225,7 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
             return { done: new Set<string>(), completed: false };
         });
         if (options.mode === 'preview')
-            return { runId: null, state: 'preview' };
+            return { runId: null, state: continuity ? 'preview' : 'preview-continuity-required' };
         persisted = true;
         if (initial.completed)
             return { runId, state: 'completed' };
@@ -232,8 +263,16 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
                 throw new TransferError();
             // Revalide todas as entidades e FKs antes da única ativação final.
             const actual = await readTransferRows(tx, owner);
-            validateSnapshot({ manifest: snapshot.manifest, entities: actual });
-            await tx.query(`SELECT setval('career.application_display_sequence',greatest((SELECT last_value FROM career.application_display_sequence),coalesce((SELECT max(substring(display_id from 2)::bigint) FROM career.applications WHERE display_id~'^N[0-9]+$'),0),1),true)`);
+            const verified = validateSnapshot({ manifest: snapshot.manifest, entities: actual });
+            const floor = await usableFloor(tx, verified);
+            if (!continuity) throw new RestoreContinuityRequiredError();
+            await tx.query(`INSERT INTO career_maintenance.retired_identities(owner_id,kind,digest)
+              SELECT $1::uuid,'client',unnest($2::text[]) UNION ALL SELECT $1::uuid,'key',unnest($3::text[])`,
+              [owner,continuity.retiredClients,continuity.retiredKeys]);
+            await tx.query(`SELECT setval('career.application_display_sequence',$1::bigint,true)
+              FROM career.application_display_sequence
+              WHERE $1::bigint > CASE WHEN is_called THEN last_value ELSE last_value-1 END`,[floor.toString()]);
+            await verifyContinuity(tx, floor);
             await tx.query(`INSERT INTO career.audit_log(id,owner_id,actor_kind,actor_id,source,entity_type,entity_id,operation,before_data,after_data,diff,request_id)
         VALUES($1,$2::uuid,'owner',$2::uuid::text,'private-restore/v1','restore_runs',$1,'restore',NULL,$3,'{}',$1)`, [runId, owner, { manifestHash, sourceOwnerId: snapshot.manifest.sourceOwnerId, destinationOwnerId: owner }]);
             await tx.query('UPDATE career.restore_row_ledger SET verified_at=now(),version=version+1,updated_at=now() WHERE owner_id=$1 AND restore_run_id=$2', [owner, runId]);
@@ -245,6 +284,10 @@ export async function restorePrivate(options: RestoreOptions): Promise<{
     catch (error) {
         if (transactionActive)
             await client.query('ROLLBACK').catch(() => undefined);
+        if (error instanceof RestoreSequenceExhaustedError) {
+            if (options.mode === 'preview') return {runId:null,state:'preview-sequence-exhausted'};
+            throw error;
+        }
         if (persisted)
             throw new RestoreInterruptedError(runId);
         const code = (error as { code?: string } | null)?.code ?? '';
@@ -269,7 +312,7 @@ export function readMaintenanceConfig(env: NodeJS.ProcessEnv): pg.ClientConfig {
         const disable = env.PRIVATE_RESTORE_DATABASE_TLS === 'disable-local';
         if (disable ? !local : env.PRIVATE_RESTORE_DATABASE_TLS !== 'verify-full')
             throw new TransferError();
-        return { host: url.hostname === '[::1]' ? '::1' : url.hostname, port, user, password, database, ssl: disable ? false : { rejectUnauthorized: true, ...(env.PRIVATE_RESTORE_DATABASE_CA_CERT ? { ca: env.PRIVATE_RESTORE_DATABASE_CA_CERT } : {}) }, connectionTimeoutMillis: 5000, statement_timeout: 30000, application_name: 'career-tracker-private-restore' };
+        return { host: url.hostname === '[::1]' ? '::1' : url.hostname, port, user, password, database, ssl: disable ? false : { rejectUnauthorized: true, ...(env.PRIVATE_RESTORE_DATABASE_CA_CERT ? { ca: env.PRIVATE_RESTORE_DATABASE_CA_CERT } : {}) }, connectionTimeoutMillis: 5000, statement_timeout: 30000, application_name: 'career-tracker-restore' };
     }
     catch {
         throw new TransferError();
@@ -301,6 +344,8 @@ export async function restorePrivateMain(args: string[], env: NodeJS.ProcessEnv 
     return restorePrivate({ database: readMaintenanceConfig(env), ownerId: config.ownerUserId, actor, snapshot, mode: mode as RestoreOptions['mode'], runId, reassignOwner });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-    restorePrivateMain(process.argv.slice(2)).then(result => console.log(result.state === 'preview' ? 'Prévia válida; destino vazio, nenhuma linha restaurada.' : 'Restauração verificada e ativada. Run: ' + result.runId))
-        .catch((error: unknown) => { console.error(error instanceof RestoreStartUncertainError ? 'Confirmação inicial incerta. Reexecute apply com o mesmo arquivo; ele confere a execução persistida. Handle: ' + error.runId : error instanceof RestoreInterruptedError ? 'Restauração interrompida; não libere a manutenção. Retome o mesmo arquivo com --run-id ' + error.runId : 'Falha na restauração privada. Confira sessão, destino, manifesto e ocupação; nenhuma informação privada foi exibida.'); process.exitCode = 1; });
+    restorePrivateMain(process.argv.slice(2)).then(result => console.log(result.state === 'preview-sequence-exhausted'
+        ? new RestoreSequenceExhaustedError().message : result.state === 'preview-continuity-required'
+        ? new RestoreContinuityRequiredError().message : result.state === 'preview' ? 'Prévia válida; destino vazio, nenhuma linha restaurada.' : 'Restauração verificada e ativada. Run: ' + result.runId))
+        .catch((error: unknown) => { console.error(error instanceof RestoreContinuityRequiredError || error instanceof RestoreSequenceExhaustedError ? error.message : error instanceof RestoreStartUncertainError ? 'Confirmação inicial incerta. Reexecute apply com o mesmo arquivo; ele confere a execução persistida. Handle: ' + error.runId : error instanceof RestoreInterruptedError ? 'Restauração interrompida; não libere a manutenção. Retome o mesmo arquivo com --run-id ' + error.runId : 'Falha na restauração privada. Confira sessão, destino, manifesto e ocupação; nenhuma informação privada foi exibida.'); process.exitCode = 1; });
 }

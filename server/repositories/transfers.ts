@@ -1,5 +1,5 @@
 import { buildSnapshot, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_ROWS, TRANSFER_TABLES, TransferError, type Snapshot, type TransferTable } from '../../domain/export.js';
-import { transferDataKeys, type TransferEntity } from '../../shared/transfer.js';
+import { transferDataKeys, type TransferContinuity, type TransferEntity } from '../../shared/transfer.js';
 import type { Transaction } from '../database';
 import type { PreviousImportState } from '../../domain/import';
 
@@ -42,8 +42,25 @@ export async function readTransferRows(tx: Transaction, ownerId?: string): Promi
   if (Number(result.rows[0]?.count ?? 0) > MAX_SNAPSHOT_ROWS || Number(result.rows[0]?.bytes ?? 0) > MAX_SNAPSHOT_BYTES - 20000) throw new TransferError();
   return result.rows.filter((row) => row.table !== null).map(({ table, data }) => ({ formatVersion: 1, table, data }) as TransferEntity);
 }
+export async function readDisplayHighWater(tx: Transaction): Promise<string> {
+  const sequence = await tx.query<{ high_water:string }>(
+    'SELECT (CASE WHEN is_called THEN last_value ELSE last_value-1 END)::text AS high_water FROM career.application_display_sequence');
+  if (!sequence.rows[0]) throw new TransferError();
+  return sequence.rows[0].high_water;
+}
+export async function readTransferContinuity(tx: Transaction, ownerId: string): Promise<TransferContinuity> {
+  const displayHighWater = await readDisplayHighWater(tx);
+  const retired = await tx.query<{ kind:'client'|'key';digest:string }>(
+    'SELECT kind,digest FROM career_maintenance.retired_identities WHERE owner_id=$1 ORDER BY kind COLLATE "C",digest LIMIT 100001',[ownerId]);
+  if (retired.rows.length > MAX_SNAPSHOT_ROWS) throw new TransferError();
+  return {displayHighWater,retiredClients:retired.rows.filter(r=>r.kind==='client').map(r=>r.digest),
+    retiredKeys:retired.rows.filter(r=>r.kind==='key').map(r=>r.digest)};
+}
 export async function readSnapshot(tx: Transaction, ownerId: string): Promise<Snapshot> {
-  return buildSnapshot(ownerId, await readTransferRows(tx, ownerId));
+  const rows = await readTransferRows(tx, ownerId);
+  // O gate compartilhado impede remoção e restore durante a captura. Leia a sequência após o histórico.
+  const continuity = await readTransferContinuity(tx, ownerId);
+  return buildSnapshot(ownerId, rows, undefined, continuity);
 }
 export function transferRecord(ownerId: string, row: TransferEntity): Record<string, unknown> {
   const record = Object.create(null) as Record<string, unknown>;

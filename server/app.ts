@@ -7,6 +7,7 @@ import { MAX_COMMAND_BYTES } from '../shared/commands.js';
 import { createSafeLogger, type RequestLog } from './logger.js';
 import { createWriteRoute } from './routes/write.js';
 import { readRoute } from './routes/read.js';
+import { fixturePath, removeFixture } from './routes/maintenance.js';
 import { createTransferRoute } from './routes/transfer.js';
 import { assertRepresentableJson } from './input.js';
 
@@ -105,6 +106,11 @@ export function createApp(dependencies: ApiDependencies) {
     };
     try {
       assertSingletonHeaders(request);
+      if ((request.url?.length ?? 0) > 14_000 || !request.url?.startsWith('/'))
+        throw new SafeError('INVALID_INPUT');
+      const url = new URL(request.url, 'http://localhost');
+      if (url.pathname === fixturePath && /^Bearer ct_agent_/i.test(request.headers.authorization ?? ''))
+        throw new SafeError('FORBIDDEN');
       const actor = await dependencies.authenticate(request.headers.authorization);
       if (Date.now() - bucket.start >= rate.windowMs) bucket = { start: Date.now(), count: 0 };
       if (++bucket.count > rate.requests) {
@@ -114,10 +120,7 @@ export function createApp(dependencies: ApiDependencies) {
         );
         throw new SafeError('QUOTA_EXCEEDED');
       }
-      if ((request.url?.length ?? 0) > 14_000 || !request.url?.startsWith('/'))
-        throw new SafeError('INVALID_INPUT');
-      const url = new URL(request.url, 'http://localhost');
-      const expected = reads.test(url.pathname) ? 'GET' : writes.test(url.pathname) ? 'POST' : null;
+      const expected = reads.test(url.pathname) ? 'GET' : writes.test(url.pathname) || url.pathname === fixturePath ? 'POST' : null;
       if (!expected) throw new SafeError('NOT_FOUND');
       if (request.method !== expected) {
         response.setHeader('Allow', expected);
@@ -129,11 +132,12 @@ export function createApp(dependencies: ApiDependencies) {
         if (url.search) throw new SafeError('INVALID_INPUT');
         const body = await readJson(
           request,
-          url.pathname.endsWith('/commands') ? MAX_COMMAND_BYTES : MAX_HTTP_TRANSFER_BYTES,
+          url.pathname === fixturePath ? 1024 : url.pathname.endsWith('/commands') ? MAX_COMMAND_BYTES : MAX_HTTP_TRANSFER_BYTES,
         );
         const key = request.headers['idempotency-key'];
         if (Array.isArray(key)) throw new SafeError('INVALID_INPUT');
-        if (url.pathname.endsWith('/commands')) result = await write(actor, body, key, context);
+        if (url.pathname === fixturePath) result = await removeFixture(dependencies.database, actor, body, key, context);
+        else if (url.pathname.endsWith('/commands')) result = await write(actor, body, key, context);
         else {
           if (actor.actorKind !== 'owner') throw new SafeError('FORBIDDEN');
           result = await transfer(actor, url.pathname, body, key, context);

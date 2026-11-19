@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { canonicalJson, validateSnapshot } from '../../domain/export.js';
+import { canonicalJson, hasDisplayCapacity, restoreDisplayFloor, validateSnapshot } from '../../domain/export.js';
 import { compareLegacyRows, parseLegacyCsv, sha256 } from '../../domain/import.js';
 import type { createDatabase, RequestContext } from '../database';
 import type { AuthenticatedOwner } from '../auth';
@@ -120,8 +120,11 @@ export function createTransferRoute(database: ReturnType<typeof createDatabase>)
           manifestHash: createHash('sha256').update(canonicalJson(snapshot.manifest)).digest('hex'),
           entityCount: snapshot.entities.length,
           nextAction: 'local_owner_maintenance_preview',
-          message:
-            'Estrutura e integridade conferidas. Use a prévia local com a sessão do proprietário e a credencial privada de manutenção para verificar o destino.',
+          message: !snapshot.manifest.continuity
+            ? 'Estrutura e integridade conferidas. Esta exportação antiga exige nova captura da continuidade da origem antes da restauração.'
+            : hasDisplayCapacity(restoreDisplayFloor(snapshot))
+              ? 'Estrutura e integridade conferidas. Use a prévia local com a sessão do proprietário e a credencial privada de manutenção para verificar o destino.'
+              : 'Estrutura e integridade conferidas. A sequência de candidaturas está esgotada e impede a ativação do destino.',
         },
       }),
       context,

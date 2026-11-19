@@ -15,6 +15,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:fixture-maintenance": "node --import tsx --test tests/maintenance/technical-fixture.test.ts",
     "test:e2e": "tsx scripts/run-e2e.ts",
     "verify:local": "node scripts/verify-local.mjs",
     "db:local:apply": "tsx scripts/local-db.ts apply",

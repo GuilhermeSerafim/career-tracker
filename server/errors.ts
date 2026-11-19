@@ -1,4 +1,5 @@
 const errors = {
+  FIXTURE_CHANGED: [409, 'O estado da verificação técnica diverge da autorização.'],
   CYCLE_NOT_STARTED: [409, 'Inicie o ciclo antes de alocar envios após o reinício.'],
   CYCLE_CONFIGURATION: [409, 'Defina explicitamente o ciclo atual nos dados importados.'],
   INVALID_INPUT: [400, 'Dados inválidos. Confira os campos informados.'],

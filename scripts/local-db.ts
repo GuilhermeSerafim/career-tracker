@@ -13,10 +13,12 @@ export class LocalDatabaseError extends Error {}
 /** Contrato das etapas 3/4. Novas migrations atualizam explicitamente esta matriz. */
 export async function validateSecurityCatalog(client: pg.Client): Promise<void> {
   const fail = () => { throw new LocalDatabaseError('O catálogo de segurança diverge do contrato de privilégios mínimos.'); };
+  const fixtureInstalled = (await client.query("SELECT to_regclass('career_maintenance.approvals') IS NOT NULL AS installed")).rows[0].installed === true;
   const principals = ['career_api', 'career_restore', 'career_schema_owner', 'career_audit_writer'];
+  if (fixtureInstalled) principals.push('career_fixture_executor');
   const roles = await client.query(`SELECT rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls,
     EXISTS(SELECT FROM pg_auth_members WHERE member=r.oid) AS membership FROM pg_roles r WHERE rolname=ANY($1)`, [principals]);
-  if (roles.rows.length !== 4 || roles.rows.some((r) => r.rolsuper || r.rolcreatedb || r.rolcreaterole || r.rolreplication || r.rolbypassrls || r.membership || r.rolcanlogin !== ['career_api', 'career_restore'].includes(r.rolname))) fail();
+  if (roles.rows.length !== principals.length || roles.rows.some((r) => r.rolsuper || r.rolcreatedb || r.rolcreaterole || r.rolreplication || r.rolbypassrls || r.membership || r.rolcanlogin !== ['career_api', 'career_restore'].includes(r.rolname))) fail();
   const tables = await client.query(`SELECT relname,relrowsecurity,relforcerowsecurity,pg_get_userbyid(relowner) AS owner
     FROM pg_class WHERE relnamespace='career'::regnamespace AND relkind='r'`);
   if (!tables.rows.length || tables.rows.some((r) => !r.relrowsecurity || !r.relforcerowsecurity || r.owner !== 'career_schema_owner')) fail();
@@ -29,7 +31,7 @@ export async function validateSecurityCatalog(client: pg.Client): Promise<void> 
   if (objects.rows.some((r) => r.owner !== (r.name === 'audit_business_change' ? 'career_audit_writer' : 'career_schema_owner'))) fail();
   const access = await client.query(`SELECT rolname,has_schema_privilege(oid,'career','USAGE') AS usage,has_schema_privilege(oid,'career','CREATE') AS create
     FROM pg_roles WHERE rolname=ANY($1)`, [[...principals.filter((r) => r !== 'career_schema_owner'), 'anon', 'authenticated', 'service_role']]);
-  if (access.rows.some((r) => r.create || r.usage !== ['career_api', 'career_restore', ...(auditInstalled ? ['career_audit_writer'] : [])].includes(r.rolname))) fail();
+  if (access.rows.some((r) => r.create || r.usage !== ['career_api', 'career_restore', ...(fixtureInstalled ? ['career_fixture_executor'] : []), ...(auditInstalled ? ['career_audit_writer'] : [])].includes(r.rolname))) fail();
   const business = ['owner_settings', 'opportunities', 'applications', 'contacts', 'links', 'resume_refs', 'application_resumes', 'evidence', 'events', 'tasks', 'cycles', 'batches', 'batch_members', 'review_versions', 'import_runs', 'source_files', 'import_rows', 'audit_log', 'mutation_keys', 'agent_credentials', 'creation_requests', 'opportunity_identities'];
   const control = ['owner_config', 'maintenance_state', 'restore_runs', 'restore_row_ledger'];
   const expectedTables = [...business, ...control].sort();
@@ -37,7 +39,7 @@ export async function validateSecurityCatalog(client: pg.Client): Promise<void> 
   const grants = await client.query(`SELECT r.rolname,c.relname,p.privilege,
     has_table_privilege(r.oid,c.oid,p.privilege) AS allowed
     FROM pg_roles r CROSS JOIN pg_class c CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) AS p(privilege)
-    WHERE r.rolname=ANY($1) AND c.relnamespace='career'::regnamespace AND c.relkind='r'`, [['career_api', 'career_restore', 'career_audit_writer']]);
+    WHERE r.rolname=ANY($1) AND c.relnamespace='career'::regnamespace AND c.relkind='r'`, [['career_api', 'career_restore', 'career_audit_writer', ...(fixtureInstalled ? ['career_fixture_executor'] : [])]]);
   for (const row of grants.rows) {
     let expected = false;
     if (row.rolname === 'career_api') {
@@ -47,6 +49,11 @@ export async function validateSecurityCatalog(client: pg.Client): Promise<void> 
     } else if (row.rolname === 'career_restore') {
       if (row.privilege === 'SELECT') expected = row.relname !== 'agent_credentials';
       if (row.privilege === 'INSERT') expected = (business.includes(row.relname) && !['agent_credentials', 'mutation_keys'].includes(row.relname)) || ['restore_runs', 'restore_row_ledger'].includes(row.relname);
+    } else if (fixtureInstalled && row.rolname === 'career_fixture_executor') {
+      const targets = ['opportunities','applications','agent_credentials','creation_requests'];
+      expected = row.privilege === 'DELETE' && targets.includes(row.relname)
+        || row.privilege === 'SELECT' && ['opportunities','applications','creation_requests','audit_log','mutation_keys'].includes(row.relname)
+        || row.privilege === 'INSERT' && row.relname === 'mutation_keys';
     } else if (auditInstalled && row.rolname === 'career_audit_writer') {
       expected = row.privilege === 'INSERT' && row.relname === 'audit_log';
     }
@@ -67,11 +74,11 @@ export async function validateSecurityCatalog(client: pg.Client): Promise<void> 
     restore_runs: ['id', 'owner_id', 'destination_owner_id', 'manifest_hash', 'state'],
   } : {};
   for (const row of columns.rows) {
-    const allowed = row.grantee === 'career_restore' ? restoreColumns : row.grantee === 'career_audit_writer' ? writerColumns : row.grantee === 'career_api' && auditInstalled ? { mutation_keys: ['http_status', 'safe_response'] } : {};
+    const allowed = row.grantee === 'career_fixture_executor' && fixtureInstalled ? { agent_credentials: ['id','owner_id','label','prefix','scopes','expires_at','revoked_at','version'] } : row.grantee === 'career_restore' ? restoreColumns : row.grantee === 'career_audit_writer' ? writerColumns : row.grantee === 'career_api' && auditInstalled ? { mutation_keys: ['http_status', 'safe_response'] } : {};
     const privilege = row.grantee === 'career_audit_writer' || row.relname === 'agent_credentials' ? 'SELECT' : 'UPDATE';
     if (row.is_grantable || !allowed[row.relname]?.includes(row.attname) || row.privilege_type !== privilege) fail();
   }
-  if (columns.rows.length !== Object.values(restoreColumns).flat().length + Object.values(writerColumns).flat().length + (auditInstalled ? 2 : 0)) fail();
+  if (columns.rows.length !== Object.values(restoreColumns).flat().length + Object.values(writerColumns).flat().length + (auditInstalled ? 2 : 0) + (fixtureInstalled ? 8 : 0)) fail();
   const functions = await client.query(`SELECT r.rolname,p.proname,p.prosecdef,
     has_function_privilege(r.oid,p.oid,'EXECUTE') AS allowed FROM pg_roles r CROSS JOIN pg_proc p
     WHERE r.rolname=ANY($1) AND p.pronamespace='career'::regnamespace`, [['career_api', 'career_restore', 'career_audit_writer']]);
@@ -84,7 +91,33 @@ export async function validateSecurityCatalog(client: pg.Client): Promise<void> 
     FROM pg_roles r CROSS JOIN pg_class c CROSS JOIN unnest(ARRAY['USAGE','SELECT','UPDATE']) p(privilege)
     WHERE r.rolname=ANY($1) AND c.relnamespace='career'::regnamespace AND c.relkind='S'`, [['career_api', 'career_restore', 'career_audit_writer']]);
   const transferInstalled = Boolean((await client.query("SELECT EXISTS(SELECT FROM pg_attribute WHERE attrelid='career.restore_runs'::regclass AND attname='destination_key' AND NOT attisdropped) AS installed")).rows[0]?.installed);
-  if (sequences.rows.some((r) => r.allowed !== (r.relname === 'application_display_sequence' && (r.rolname === 'career_api' && r.privilege === 'USAGE' || r.rolname === 'career_restore' && (r.privilege === 'USAGE' || transferInstalled))))) fail();
+  if (sequences.rows.some((r) => r.allowed !== (r.relname === 'application_display_sequence' && (r.rolname === 'career_api' && (r.privilege === 'USAGE' || fixtureInstalled && r.privilege === 'SELECT') || r.rolname === 'career_restore' && (r.privilege === 'USAGE' || transferInstalled))))) fail();
+  if (fixtureInstalled) {
+    const privateAccess = await client.query(`SELECT r.rolname AS role, c.relname AS name, p.privilege,
+      has_table_privilege(r.oid,c.oid,p.privilege) AS allowed FROM pg_roles r CROSS JOIN pg_class c
+      CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN']) p(privilege)
+      WHERE c.relnamespace='career_maintenance'::regnamespace AND c.relkind='r'
+      AND r.rolname=ANY($1)`, [[...principals, 'anon','authenticated','service_role']]);
+    for (const row of privateAccess.rows) {
+      const permitted = row.name === 'retired_identities'
+        ? row.privilege === 'SELECT' && ['career_api','career_restore','career_fixture_executor','career_schema_owner'].includes(row.role)
+          || row.privilege === 'INSERT' && ['career_restore','career_fixture_executor'].includes(row.role)
+        : row.role === 'career_fixture_executor' && (row.privilege === 'SELECT' || row.name === 'outcomes' && row.privilege === 'INSERT');
+      if (row.allowed !== permitted) fail();
+    }
+    const callable = await client.query(`SELECT p.proname AS name, r.rolname AS role,
+      has_function_privilege(r.oid,p.oid,'EXECUTE') AS allowed FROM pg_proc p CROSS JOIN pg_roles r
+      WHERE p.pronamespace='career_maintenance'::regnamespace AND r.rolname=ANY($1)`,
+      [[...principals, 'anon','authenticated','service_role']]);
+    const permitted: Record<string,string[]> = {
+      career_api: ['remove_fixture'], career_schema_owner: ['baseline','history','catalog_hash','executor_stamp'],
+      career_fixture_executor: ['baseline','history','allowed_target','lock_approval','remove_fixture','refuse_retired_identity'],
+    };
+    if (callable.rows.some(r => r.allowed !== (permitted[r.role]?.includes(r.name) ?? false))) fail();
+    const stamp = await client.query(`SELECT ('career_maintenance.executor_stamp='||career_maintenance.executor_stamp())=ANY(proconfig) AS bound
+      FROM pg_proc WHERE oid='career_maintenance.baseline(uuid,text)'::regprocedure`);
+    if (stamp.rows[0]?.bound !== true) fail();
+  }
   const unexpectedAcl = await client.query(`SELECT 1 FROM (
       SELECT x.* FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) x WHERE c.relnamespace='career'::regnamespace
       UNION ALL SELECT x.* FROM pg_proc p CROSS JOIN LATERAL aclexplode(p.proacl) x WHERE p.pronamespace='career'::regnamespace

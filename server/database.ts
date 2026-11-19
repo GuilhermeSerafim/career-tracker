@@ -24,7 +24,7 @@ export function createDatabase(config: ServerConfig) {
   const pool = new pg.Pool(config.database);
   // Erros assíncronos do pool não podem imprimir URLs, credenciais ou payloads.
   pool.on('error', () => undefined);
-  async function gated<T>(work: (transaction: Transaction) => Promise<T>): Promise<T> {
+  async function gated<T>(work: (transaction: Transaction) => Promise<T>, exclusive = false): Promise<T> {
     let client: pg.PoolClient;
     try { client = await pool.connect(); }
     catch { throw new SafeError('DATABASE_UNAVAILABLE'); }
@@ -50,7 +50,11 @@ export function createDatabase(config: ServerConfig) {
     };
     const run = async () => {
       await transaction.query('BEGIN ISOLATION LEVEL READ COMMITTED');
-      await transaction.query('SELECT pg_advisory_xact_lock_shared($1,$2)', [...MAINTENANCE_LOCK]);
+      if (exclusive) {
+        const gate = await transaction.query('SELECT pg_try_advisory_xact_lock($1,$2) AS admitted', [...MAINTENANCE_LOCK]);
+        if (!gate.rows[0]?.admitted) throw new SafeError('MAINTENANCE');
+        await transaction.query("SET LOCAL lock_timeout = '1500ms'");
+      } else await transaction.query('SELECT pg_advisory_xact_lock_shared($1,$2)', [...MAINTENANCE_LOCK]);
       const identity = await transaction.query<{ session_user: string; current_user: string }>('SELECT session_user,current_user');
       if (identity.rows[0]?.session_user !== 'career_api' || identity.rows[0]?.current_user !== 'career_api') throw new SafeError('NOT_CONFIGURED');
       const owner = await transaction.query<{ owner_id: string }>('SELECT owner_id FROM career.owner_config WHERE singleton');
@@ -70,6 +74,7 @@ export function createDatabase(config: ServerConfig) {
       }
       const code = (error as { code?: string } | null)?.code;
       if (broken || code?.startsWith('08') || ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', '25P03', '57P01', '57P02', '57P03', '57014', '55P03'].includes(code ?? '')) throw new SafeError('DATABASE_UNAVAILABLE');
+      if (code === 'P0409') throw new SafeError('IDEMPOTENCY_CONFLICT');
       // Ausência de migration/privilégios falha fechada sem retornar nomes internos.
       if (['42P01', '3F000', '42883'].includes(code ?? '')) throw new SafeError('NOT_CONFIGURED');
       throw error;
@@ -115,6 +120,27 @@ export function createDatabase(config: ServerConfig) {
         try { return await work(transaction); }
         finally { active = false; }
       });
+    },
+    async removeTechnicalFixture(actor: AuthenticatedActor, context: RequestContext,
+      command: { approvalId: string; runId: string; packageHash: string }, key: string, hash: string) {
+      assertAuthenticatedActor(actor, config.ownerUserId);
+      if (actor.actorKind !== 'owner') throw new SafeError('FORBIDDEN');
+      if (!requestContexts.has(context)) throw new SafeError('NOT_CONFIGURED');
+      return gated(async (client) => {
+        await client.query(`SELECT set_config('app.owner_id',$1,true),set_config('app.actor_kind','owner',true),
+          set_config('app.actor_id',$1,true),set_config('app.source','maintenance',true),
+          set_config('app.request_id',$2,true)`, [actor.ownerId, context.requestId]);
+        try {
+          const result = await client.query('SELECT career_maintenance.remove_fixture($1,$2,$3,$4,$5) AS reply',
+            [command.approvalId,command.runId,command.packageHash,key,hash]);
+          return result.rows[0]?.reply as unknown;
+        } catch (error) {
+          const code = (error as {code?: string})?.code;
+          if (code === '42501') throw new SafeError('FORBIDDEN');
+          if (code === 'P0412') throw new SafeError('FIXTURE_CHANGED');
+          throw error;
+        }
+      }, true);
     },
     close: () => pool.end(),
   };

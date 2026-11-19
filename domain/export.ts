@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { LEGACY_HEADER, parseLegacyCsv } from './import.js';
 import { toLocalDay } from './dates.js';
-import { transferDataKeys, transferEntitySchema, transferManifestSchema, transferTableSchema, type TransferEntity, type TransferManifest } from '../shared/transfer.js';
+import { MAX_DISPLAY_NUMBER, transferDataKeys, transferEntitySchema, transferManifestSchema, transferTableSchema, type TransferContinuity, type TransferEntity, type TransferManifest } from '../shared/transfer.js';
 export const TRANSFER_TABLES = transferTableSchema.options;
 export type TransferTable = typeof TRANSFER_TABLES[number];
 export const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
@@ -50,6 +50,32 @@ export interface Snapshot {
     manifest: TransferManifest;
     entities: TransferEntity[];
 }
+// O JSON de auditoria também pode conter texto antigo fora do domínio dos identificadores N.
+function displayNumber(value: unknown): bigint | null {
+    if (typeof value !== 'string' || !/^N[0-9]{6,}$/.test(value)) return null;
+    const digits = value.slice(1).replace(/^0+/, '') || '0';
+    if (digits.length > 19) return null;
+    const number = BigInt(digits);
+    return number <= MAX_DISPLAY_NUMBER ? number : null;
+}
+export const hasDisplayCapacity = (floor: bigint) => floor < MAX_DISPLAY_NUMBER;
+export function restoreDisplayFloor(snapshot: Snapshot, destinationFloor = 0n): bigint {
+    const sourceFloor = BigInt(snapshot.manifest.continuity?.displayHighWater ?? '0');
+    let floor = sourceFloor > destinationFloor ? sourceFloor : destinationFloor;
+    const include = (value: unknown) => {
+        const number = displayNumber(value);
+        if (number !== null && number > floor) floor = number;
+    };
+    for (const row of snapshot.entities) {
+        if (row.table === 'applications') include(row.data.displayId);
+        if (row.table === 'audit_log' && row.data.entityType === 'applications') {
+            for (const data of [row.data.beforeData,row.data.afterData])
+                if (data && typeof data === 'object' && Object.hasOwn(data,'display_id'))
+                    include((data as Record<string,unknown>).display_id);
+        }
+    }
+    return floor;
+}
 const snapshotSchema = z.strictObject({ manifest: transferManifestSchema, entities: z.array(transferEntitySchema).max(MAX_SNAPSHOT_ROWS) });
 const order = (a: TransferEntity, b: TransferEntity) => a.table < b.table ? -1 : a.table > b.table ? 1 : a.data.id < b.data.id ? -1 : a.data.id > b.data.id ? 1 : 0;
 /** Relações de negócio explícitas; entityId de auditoria pode apontar para histórico removido. */
@@ -65,7 +91,7 @@ export const TRANSFER_REFERENCES: Partial<Record<TransferTable, Record<string, T
     opportunity_identities: { opportunityId: 'opportunities', verificationEvidenceId: 'evidence' },
     creation_requests: { resultApplicationId: 'applications', resultContactId: 'contacts', resultTaskId: 'tasks', resultEventId: 'events', resultResumeId: 'resume_refs', resultEvidenceId: 'evidence', resultCycleId: 'cycles' },
 };
-export function validateReferences(entities: TransferEntity[]): void {
+export function validateReferences(entities: TransferEntity[], capturedFloor?: string): void {
     const index = new Map(entities.map((row) => [row.table + '/' + row.data.id, row]));
     if (index.size !== entities.length)
         throw new TransferError();
@@ -91,8 +117,9 @@ export function validateReferences(entities: TransferEntity[]): void {
                 throw new TransferError();
         }
         if (row.table === 'applications' && row.data.displayId.startsWith('N')) {
-            const significant = row.data.displayId.slice(1).replace(/^0+/, '') || '0';
-            if (significant.length > 19 || BigInt(significant) >= 9223372036854775807n)
+            const number = displayNumber(row.data.displayId);
+            // Uma origem que consumiu o último número continua exportável para consulta e prévia.
+            if (number === null || !hasDisplayCapacity(number) && capturedFloor !== MAX_DISPLAY_NUMBER.toString())
                 throw new TransferError();
         }
         if (row.table === 'cycles') {
@@ -158,9 +185,10 @@ export function validateReferences(entities: TransferEntity[]): void {
     if (current > 1)
         throw new TransferError();
 }
-export function buildSnapshot(sourceOwnerId: string, entities: TransferEntity[], exportedAt = new Date().toISOString()): Snapshot {
+export function buildSnapshot(sourceOwnerId: string, entities: TransferEntity[], exportedAt = new Date().toISOString(), continuity?: TransferContinuity): Snapshot {
     const rows = [...entities].sort(order);
-    return validateSnapshot({ manifest: { formatVersion: 1, sourceOwnerId, exportedAt, tables: TRANSFER_TABLES.map((table) => {
+    const continuityField = continuity ? { continuity: { ...continuity, sha256: transferHash(continuity) } } : {};
+    return validateSnapshot({ manifest: { formatVersion: 1, sourceOwnerId, exportedAt, ...continuityField, tables: TRANSFER_TABLES.map((table) => {
                 const selected = rows.filter((row) => row.table === table);
                 return { table, count: selected.length, sha256: transferHash(selected) };
             }) }, entities: rows });
@@ -183,7 +211,14 @@ export function validateSnapshot(input: unknown): Snapshot {
             if (table.count !== selected.length || table.sha256 !== transferHash(selected))
                 throw new TransferError();
         }
-        validateReferences(rows);
+        if (parsed.manifest.continuity) {
+            const { sha256, ...continuity } = parsed.manifest.continuity;
+            if (transferHash(continuity) !== sha256) throw new TransferError();
+            const retired = new Set(continuity.retiredClients);
+            if (rows.some(row => row.table === 'creation_requests' &&
+                retired.has(createHash('sha256').update(row.data.clientId.toLowerCase()).digest('hex')))) throw new TransferError();
+        }
+        validateReferences(rows, parsed.manifest.continuity?.displayHighWater);
         restorationOrder(rows);
         return { manifest: parsed.manifest, entities: rows };
     }

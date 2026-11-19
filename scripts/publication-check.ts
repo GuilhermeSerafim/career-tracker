@@ -9,12 +9,12 @@ const groups = [
   ['', '.env.example .gitattributes .gitignore .npmrc .nvmrc README.md eslint.config.js index.html package-lock.json package.json playwright.config.ts tsconfig.app.json tsconfig.base.json tsconfig.json tsconfig.server.json vercel.json vite.config.ts vitest.config.ts vitest.integration.config.ts'],
   ['.github/workflows', 'checks.yml'],
   ['api', 'index.ts'],
-  ['docs', 'activity-services.md agent-api.md application-services.md design.md http-api.md legacy-preview.md operations.md private-transfers.md reviews.md security.md verification.md'],
+  ['docs', 'activity-services.md agent-api.md application-services.md design.md http-api.md legacy-preview.md operations.md private-transfers.md reviews.md security.md technical-fixture-maintenance.md verification.md'],
   ['domain', 'cycles.ts dates.ts export.ts identity.ts import.ts metrics.ts review-markdown.ts'],
   ['scripts', 'agent-client.ts audit-local.ts check-api-runtime.mjs check-build.ts export-private.ts import-legacy.ts local-db.ts private-transfer-io.ts provision-owner.ts publication-check.ts restore-private.ts run-e2e.ts verify-local.mjs'],
   ['server', 'agent-policy.ts app.ts auth.ts config.ts database.ts dev.ts errors.ts input.ts logger.ts mutation.ts runtime.ts security-policy.ts unavailable.ts'],
   ['server/repositories', 'activity.ts career.ts identities.ts reviews.ts transfer-preflight.ts transfers.ts'],
-  ['server/routes', 'read.ts transfer.ts write.ts'],
+  ['server/routes', 'maintenance.ts read.ts transfer.ts write.ts'],
   ['server/services', 'activity.ts applications.ts credentials.ts exports.ts imports.ts reviews.ts'],
   ['shared', 'agent-credentials.ts analytics.ts application-results.ts commands.ts model.ts queries.ts transfer.ts'],
   ['src/app', 'App.tsx Shell.tsx query.ts runtime.ts validation.ts'],
@@ -29,12 +29,13 @@ const groups = [
   ['src', 'main.tsx'],
   ['src/styles', 'global.css tokens.css'],
   ['supabase', '.gitignore config.toml'],
-  ['supabase/migrations', '20261116003352_model_career_records_and_provenance.sql 20261116010237_restrict_career_data_to_configured_owner.sql 20261116014818_make_career_mutations_atomic_and_repeatable.sql 20261116133302_preserve_application_identity_and_corrections.sql 20261116154155_close_and_rectify_versioned_application_reviews.sql 20261116173420_import_legacy_records_with_durable_baselines.sql 20261116184127_export_and_restore_complete_private_history.sql'],
-  ['supabase/schemas', '001_model.sql 002_security.sql 003_audit.sql 004_applications.sql 005_reviews.sql 006_imports.sql 007_transfers.sql'],
+  ['supabase/migrations', '20261116003352_model_career_records_and_provenance.sql 20261116010237_restrict_career_data_to_configured_owner.sql 20261116014818_make_career_mutations_atomic_and_repeatable.sql 20261116133302_preserve_application_identity_and_corrections.sql 20261116154155_close_and_rectify_versioned_application_reviews.sql 20261116173420_import_legacy_records_with_durable_baselines.sql 20261116184127_export_and_restore_complete_private_history.sql 20261119175518_audited_technical_fixture_maintenance.sql'],
+  ['supabase/schemas', '001_model.sql 002_security.sql 003_audit.sql 004_applications.sql 005_reviews.sql 006_imports.sql 007_transfers.sql 008_fixture_maintenance.sql'],
   ['tests/e2e', 'accessibility.spec.ts career.spec.ts security.spec.ts'],
   ['tests/fixtures', 'career.ts legacy.csv review.md'],
   ['tests/helpers', 'agent.ts api.ts command-budget.ts database-client-failure.ts database.ts integration-lifecycle.ts review-scenario.ts synthetic-browser.ts synthetic-career.ts today-scenario.ts'],
   ['tests/integration', 'activity.test.ts agent-access.test.ts analytics-explain.test.ts application-detail.test.ts applications.test.ts contact-catalog.test.ts contacts.test.ts database-failures.test.ts http-boundaries.test.ts http.test.ts imports.test.ts mutation-audit.test.ts mutations.test.ts review-ui-contract.test.ts reviews.test.ts security.test.ts transfer-preflight.test.ts transfers.test.ts'],
+  ['tests/maintenance', 'technical-fixture.test.ts'],
   ['tests/ui', 'agent-credentials.test.tsx charts.test.tsx controls.test.tsx detail.test.tsx forms.test.tsx reviews-settings.test.tsx session.test.tsx shell.test.tsx today.test.tsx transfer-client.test.tsx'],
   ['tests/unit', 'agent-auth.test.ts agent-client.test.ts auth.test.ts build-privacy.test.ts contracts.test.ts cycles.test.ts database-boundary.test.ts dates.test.ts export.test.ts identity.test.ts import-bounds.test.ts import-preview.test.ts import.test.ts local-db-connection.test.ts local-db.test.ts metrics.test.ts mutation.test.ts private-transfer-io.test.ts publication-check.test.ts restore-target.test.ts security-policy.test.ts server-config.test.ts snapshot.test.ts transfer-preservation.test.ts'],
 ] as const;
@@ -131,6 +132,8 @@ const reviewedExamples = new Set([
   "bf817d6bd0df4a0c62b5bf3ba80bd3e54e308fa119af574f320a4abf6fab46bb",
   // scripts/verify-local.mjs
   "566a7f0541d56bce62b9693f4daa69554f265351aaba491bb7995aba70799efa",
+  // server/app.ts
+  "96c1e617f49e0f58df6a5284fca7ff483ae7048a7678ad5e2b8d74fbb18d6c4b",
   // server/auth.ts
   "24539503fe1af81ea69a653a2032878748feec83fbde59ea15ba2e3772f1575e",
   // src/lib/auth.ts
@@ -185,6 +188,8 @@ const reviewedExamples = new Set([
   "bdc92b1e3990bcaf71bcc70d62f93bca3244821f2324d12ca2848bd64f13ccae",
   // tests/integration/transfers.test.ts
   "55fb3c43d185731d10f6d9994d95bea69380b027f1e79b0faf28596fd682a99a",
+  // tests/maintenance/technical-fixture.test.ts
+  "b428a2764021a6a1b07c9cce4e42ffa71c90ef75f9edf8e806c0aee225ea1cde",
   // tests/ui/agent-credentials.test.tsx
   "c68b1baef48ad560887757c04a6a14c6074314fb55a96bb270314c900a686c06",
   // tests/ui/charts.test.tsx

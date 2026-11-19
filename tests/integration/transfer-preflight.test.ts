@@ -12,6 +12,7 @@ import { provisionOwner } from '../../scripts/provision-owner';
 import { restorePrivate } from '../../scripts/restore-private';
 import { sha256 } from '../../domain/import';
 
+const emptyContinuity = { displayHighWater: '0', retiredClients: [], retiredKeys: [] };
 const owner = randomUUID();
 const time = '2026-11-16T10:20:30.123456+00:00';
 const unknown = { precision: 'unknown' as const, value: null };
@@ -93,7 +94,7 @@ const cases: [string, () => TransferEntity[]][] = [
     ['duplicate source filename', () => { const run: TransferEntity = { formatVersion: 1, table: 'import_runs', data: { ...base(), importerVersion: 'fixture', sourceSetHash: 'a'.repeat(64), status: 'completed', pendingIssues: [], unitState: {} } }; return [run, ...[1, 2].map((): TransferEntity => ({ formatVersion: 1, table: 'source_files', data: { ...base(), importRunId: run.data.id, fileName: 'fixture.txt', fileHash: sha256(''), originalBytesBase64: '', originalText: '' } }))]; }],
 ];
 it.each(cases)('recusa %s antes de alterar qualquer estado e permite operação válida seguinte', async (_label, fixture) => {
-    const snapshot = buildSnapshot(owner, fixture(), time);
+    const snapshot = buildSnapshot(owner, fixture(), time, emptyContinuity);
     const before = await bootstrapState();
     const options = { database: maintenance, ownerId: owner, actor, snapshot, chunkSize: 1 };
     const preview = await restorePrivate({ ...options, mode: 'preview' }).then(() => null, error => error);
@@ -103,7 +104,7 @@ it.each(cases)('recusa %s antes de alterar qualquer estado e permite operação 
     expect(applied).not.toHaveProperty('runId');
     expect(await bootstrapState()).toEqual(before);
     await expect(runtime.assertReady()).resolves.toBeUndefined();
-    const valid = buildSnapshot(owner, [contact(), settings()], time);
+    const valid = buildSnapshot(owner, [contact(), settings()], time, emptyContinuity);
     expect(await restorePrivate({ ...options, snapshot: valid, mode: 'apply' })).toMatchObject({ state: 'completed' });
     const exported = await createExportService(runtime).json(actor);
     expect(canonicalJson(exported.entities.filter(row => row.table !== 'audit_log'))).toBe(canonicalJson(valid.entities));
@@ -112,7 +113,7 @@ it('preserva formatos históricos dentro de JSON/DateValue, texto Unicode e chav
     const history = JSON.parse('{"__proto__":{"date":"2026-11-16T10:20:30.123456789Z","id":"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"},"ordered":[2,1],"text":"  espaço \\ufeff"}');
     const run: TransferEntity = { formatVersion: 1, table: 'import_runs', data: { ...base(), importerVersion: 'fixture', sourceSetHash: 'a'.repeat(64), status: 'completed', pendingIssues: [], unitState: {} } };
     const binary = Buffer.from([0, 255, 254, 239, 187, 191]);
-    const snapshot = buildSnapshot(owner, [contact({ notes: '\ufeff texto Unicode preservado \r\n' }), audit({ beforeData: history, afterData: history }), { formatVersion: 1, table: 'evidence', data: { ...base(), kind: 'relato_usuario', originalText: ' original ', source: null, capturedAt: time, occurredDate: { precision: 'instant', certainty: 'exact', value: '2026-11-16T07:20:30.123456789-03:00' }, privateRef: null, localRef: null } }, run, { formatVersion: 1, table: 'source_files', data: { ...base(), importRunId: run.data.id, fileName: 'binario.bin', fileHash: sha256(binary), originalBytesBase64: binary.toString('base64'), originalText: null } }], time);
+    const snapshot = buildSnapshot(owner, [contact({ notes: '\ufeff texto Unicode preservado \r\n' }), audit({ beforeData: history, afterData: history }), { formatVersion: 1, table: 'evidence', data: { ...base(), kind: 'relato_usuario', originalText: ' original ', source: null, capturedAt: time, occurredDate: { precision: 'instant', certainty: 'exact', value: '2026-11-16T07:20:30.123456789-03:00' }, privateRef: null, localRef: null } }, run, { formatVersion: 1, table: 'source_files', data: { ...base(), importRunId: run.data.id, fileName: 'binario.bin', fileHash: sha256(binary), originalBytesBase64: binary.toString('base64'), originalText: null } }], time, emptyContinuity);
     const options = { database: maintenance, ownerId: owner, actor, snapshot };
     expect(await restorePrivate({ ...options, mode: 'preview' })).toMatchObject({ state: 'preview' });
     const result = await restorePrivate({ ...options, mode: 'apply' });
@@ -120,7 +121,7 @@ it('preserva formatos históricos dentro de JSON/DateValue, texto Unicode e chav
     expect(canonicalJson(exported.entities.filter(row => !(row.table === 'audit_log' && row.data.id === result.runId)))).toBe(canonicalJson(snapshot.entities));
 });
 it('retorna handle incerto na perda do COMMIT inicial e descobre o mesmo run por apply do mesmo arquivo', async () => {
-    const snapshot = buildSnapshot(owner, [contact(), settings()], time);
+    const snapshot = buildSnapshot(owner, [contact(), settings()], time, emptyContinuity);
     const options = { database: maintenance, ownerId: owner, actor, snapshot, mode: 'apply' as const };
     const original = pg.Client.prototype.query;
     const query = original as (this: pg.Client, sql: string, values?: unknown[]) => Promise<pg.QueryResult>;
@@ -142,7 +143,7 @@ it('retorna handle incerto na perda do COMMIT inicial e descobre o mesmo run por
     expect((await bootstrapState()).counts.restore_runs).toBe(1);
     await expect(runtime.assertReady()).rejects.toMatchObject({ code: 'MAINTENANCE', status: 503 });
     const before = await bootstrapState();
-    await expect(restorePrivate({ ...options, snapshot: buildSnapshot(owner, [contact()], time) })).rejects.toThrow();
+    await expect(restorePrivate({ ...options, snapshot: buildSnapshot(owner, [contact()], time, emptyContinuity) })).rejects.toThrow();
     expect(await bootstrapState()).toEqual(before);
     const otherOwner = randomUUID();
     const otherActor = await authenticateBearer('Bearer eyJhIjox.eyJiIjoy.signature', { ownerUserId: otherOwner }, { getUser: async () => ({ data: { user: { id: otherOwner } }, error: null }) });
@@ -162,7 +163,7 @@ it('retorna handle incerto na perda do COMMIT inicial e descobre o mesmo run por
     expect((await admin.query("SELECT count(*) AS n FROM career.audit_log WHERE operation='restore'")).rows[0].n).toBe('1');
 });
 it('distingue falha confirmada antes do COMMIT sem criar handle ou exigir limpeza manual', async () => {
-    const snapshot = buildSnapshot(owner, [contact()], time);
+    const snapshot = buildSnapshot(owner, [contact()], time, emptyContinuity);
     const options = { database: maintenance, ownerId: owner, actor, snapshot, mode: 'apply' as const };
     const before = await bootstrapState();
     const original = pg.Client.prototype.query;

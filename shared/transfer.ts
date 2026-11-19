@@ -160,7 +160,17 @@ export const transferEntitySchema = z.discriminatedUnion('table', [
   envelope('review_versions'), envelope('import_runs'), envelope('source_files'), envelope('import_rows'),
   envelope('audit_log'), envelope('opportunity_identities'), envelope('creation_requests'),
 ]);
+const orderedDigests = z.array(sha256Schema).max(100_000)
+  .refine(values => values.every((value,index) => index === 0 || value > values[index-1]!));
+export const MAX_DISPLAY_NUMBER = 9223372036854775807n;
+const continuitySchema = z.strictObject({
+  displayHighWater: z.string().regex(/^(0|[1-9][0-9]{0,18})$/)
+    .refine(value => BigInt(value) <= MAX_DISPLAY_NUMBER),
+  retiredClients: orderedDigests, retiredKeys: orderedDigests, sha256: sha256Schema,
+}).refine(value => value.retiredClients.length + value.retiredKeys.length <= 100_000);
+export type TransferContinuity = Omit<z.infer<typeof continuitySchema>, 'sha256'>;
 export const transferManifestSchema = z.strictObject({
+  continuity: continuitySchema.optional(),
   formatVersion: z.literal(1), exportedAt: instantSchema, sourceOwnerId: uuidSchema,
   tables: z.array(z.strictObject({ table: transferTableSchema, count: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), sha256: sha256Schema })).max(20)
     .refine((tables) => new Set(tables.map((row) => row.table)).size === tables.length, 'Cada tabela deve aparecer uma vez.'),
