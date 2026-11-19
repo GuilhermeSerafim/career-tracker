@@ -453,7 +453,7 @@ test('gráfico abre registros: barra e tabela preservam IDs, cobertura, paginaç
   expect(requested.some((path) => /Chart-|AnalyticsPage-/.test(path))).toBe(false);
   const analyticsResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/analytics' && response.status() === 200);
   await page.getByRole('link', { name: 'Análises', exact: true }).click(); await analyticsResponse;
-  await page.getByLabel('Base de conversão').selectOption('all_dates');
+  await page.getByRole('combobox', { name: 'Base de conversão' }).selectOption('all_dates');
   const normalizedResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/analytics' && response.status() === 200);
   await page.getByRole('button', { name: 'Aplicar período' }).click();
   const result = await (await normalizedResponse).json();
@@ -631,7 +631,7 @@ test.describe('revisões e transferências em proprietários isolados', () => {
     await page.getByLabel('Filtrar empresa', { exact: true }).fill('Fluxo integrado fictício');
     await page.getByRole('button', { name: 'Aplicar filtros' }).click();
     await expect(page.getByText('1 registro(s) no filtro · 1 nesta página')).toBeVisible();
-    await page.goto('/analises'); await page.getByLabel('Base de conversão').selectOption('all_dates');
+    await page.goto('/analises'); await page.getByRole('combobox', { name: 'Base de conversão' }).selectOption('all_dates');
     await page.getByRole('button', { name: 'Aplicar período' }).click();
     const channel = page.getByRole('region', { name: 'Canal de descoberta', exact: true });
     await channel.getByRole('button', { name: 'Ver candidaturas: Canal desconhecido', exact: true }).click();

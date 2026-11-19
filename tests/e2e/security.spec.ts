@@ -6,7 +6,14 @@ import { parse } from 'csv-parse/sync';
 
 let api: Awaited<ReturnType<typeof syntheticCareerApi>>;
 test.beforeEach(async () => { api = await syntheticCareerApi(); });
-test.afterEach(async () => { await api?.close(); });
+test.afterEach(async ({ context }) => {
+  try {
+    // A final navigation can still issue API reads after the shell is visible.
+    await context.close();
+  } finally {
+    await api?.close();
+  }
+});
 async function login(page: Page) {
   await page.getByLabel('E-mail', { exact: true }).fill('synthetic@example.invalid');
   await page.getByLabel('Senha', { exact: true }).fill('synthetic-password-only');
