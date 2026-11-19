@@ -11,7 +11,7 @@ const groups = [
   ['api', 'index.ts'],
   ['docs', 'activity-services.md agent-api.md application-services.md design.md http-api.md legacy-preview.md operations.md private-transfers.md reviews.md security.md technical-fixture-maintenance.md verification.md'],
   ['domain', 'cycles.ts dates.ts export.ts identity.ts import.ts metrics.ts review-markdown.ts'],
-  ['scripts', 'agent-client.ts audit-local.ts check-api-runtime.mjs check-build.ts export-private.ts import-legacy.ts local-db.ts private-transfer-io.ts provision-owner.ts publication-check.ts restore-private.ts run-e2e.ts verify-local.mjs'],
+  ['scripts', 'agent-client.ts audit-local.ts check-api-runtime.mjs check-build.ts cutover-check.ts export-private.ts import-legacy.ts local-db.ts private-transfer-io.ts provision-owner.ts publication-check.ts restore-private.ts run-e2e.ts verify-local.mjs'],
   ['server', 'agent-policy.ts app.ts auth.ts config.ts database.ts dev.ts errors.ts input.ts logger.ts mutation.ts runtime.ts security-policy.ts unavailable.ts'],
   ['server/repositories', 'activity.ts career.ts identities.ts reviews.ts transfer-preflight.ts transfers.ts'],
   ['server/routes', 'maintenance.ts read.ts transfer.ts write.ts'],
@@ -37,7 +37,7 @@ const groups = [
   ['tests/integration', 'activity.test.ts agent-access.test.ts analytics-explain.test.ts application-detail.test.ts applications.test.ts contact-catalog.test.ts contacts.test.ts database-failures.test.ts http-boundaries.test.ts http.test.ts imports.test.ts mutation-audit.test.ts mutations.test.ts review-ui-contract.test.ts reviews.test.ts security.test.ts transfer-preflight.test.ts transfers.test.ts'],
   ['tests/maintenance', 'technical-fixture.test.ts'],
   ['tests/ui', 'agent-credentials.test.tsx charts.test.tsx controls.test.tsx detail.test.tsx forms.test.tsx reviews-settings.test.tsx session.test.tsx shell.test.tsx today.test.tsx transfer-client.test.tsx'],
-  ['tests/unit', 'agent-auth.test.ts agent-client.test.ts auth.test.ts build-privacy.test.ts contracts.test.ts cycles.test.ts database-boundary.test.ts dates.test.ts export.test.ts identity.test.ts import-bounds.test.ts import-preview.test.ts import.test.ts local-db-connection.test.ts local-db.test.ts metrics.test.ts mutation.test.ts private-transfer-io.test.ts publication-check.test.ts restore-target.test.ts security-policy.test.ts server-config.test.ts snapshot.test.ts transfer-preservation.test.ts'],
+  ['tests/unit', 'agent-auth.test.ts agent-client.test.ts auth.test.ts build-privacy.test.ts contracts.test.ts cutover-check.test.ts cycles.test.ts database-boundary.test.ts dates.test.ts export.test.ts identity.test.ts import-bounds.test.ts import-preview.test.ts import.test.ts local-db-connection.test.ts local-db.test.ts metrics.test.ts mutation.test.ts private-transfer-io.test.ts publication-check.test.ts restore-target.test.ts security-policy.test.ts server-config.test.ts snapshot.test.ts transfer-preservation.test.ts'],
 ] as const;
 const allowed = new Set(groups.flatMap(([dir, names]) => names.split(' ').map(name => dir ? dir + '/' + name : name)));
 const dirs = new Set<string>();

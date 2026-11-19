@@ -31,3 +31,17 @@ A validação do manifesto reinterpreta cada registro CSV bruto para conferir os
 A consistência da base capturada não comprova a verdade atual do banco nem autentica um histórico editado externamente. Antes de aplicar decisões, o servidor consulta o estado atual do destino e recalcula a comparação.
 
 A captura de vários arquivos não congela escritores. Cada cópia é conferida byte a byte, e as fontes são relidas antes da conclusão. `findOriginalSourceDrift(manifest)` confere separadamente os hashes dos arquivos na origem operacional e lista os nomes alterados/ausentes. Essa checagem de origem não substitui a verificação do artefato copiado. Antes da reconciliação, repita as verificações da origem e da cópia. A aplicação exige decisões explícitas e validação independente no servidor.
+
+## Conferência local após a importação
+
+```sh
+npm run cutover:check -- --manifest <pasta-da-previa>/manifest.json --export <exportacao-privada-json>
+```
+
+Use o manifesto na pasta da captura original, com `sources/` e `diff.json`, e um JSON completo da exportação privada. Ambos devem estar fora do repositório e do worktree. A conferência lê somente esses artefatos. Ela valida hashes, compara os bytes arquivados e confere cada ID, posição, ordem, evidência, texto, data, CV e referência contra a importação concluída. Uma alteração de etapa registrada na mesma candidatura é contabilizada separadamente.
+
+Para uma revisão vinculada, o comando confere o Markdown arquivado, a proveniência, os membros, os eventos e o hash do pedido de importação reconstruído a partir do export. Quando existem arquivos Markdown e nenhum vínculo verificável, a conferência fica pendente. Com uma revisão vinculada, outros controles Markdown são contados como arquivos de origem. A leitura desses controles e a validação das decisões históricas fazem parte da reconciliação manual.
+
+Os códigos de saída são 0 para conferência aprovada, 2 para divergências ou pendências e 1 para entradas inválidas ou falha de execução. O resultado exibe somente contagens e categorias. Uma decisão explícita que mantém um valor atual diferente da fonte aparece como pendência com o original preservado. Candidaturas nativas, alterações de etapa auditadas e referências legadas que só cabem no original são contadas. O resultado se aplica ao par de artefatos apresentado. A etapa operacional ainda exige a comparação com a origem atual e a decisão de corte.
+
+Quando a aplicação seleciona uma atribuição de fonte que excede o limite de 500 unidades UTF-16 do campo curto, a evidência mantém a linha original inteira e o campo curto fica nulo. O CSV arquivado conserva os bytes e a linha aplicada registra o aviso `unprojected_source_attribution`. A conferência só conta essa preservação depois de verificar a evidência integral, o aviso e o valor nulo. A prévia mantém a atribuição literal.

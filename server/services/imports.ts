@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { manifestSchema } from '../../scripts/import-legacy.js';
-import { compareLegacyRows, IMPORTER_VERSION, LEGACY_HEADER, parseLegacyCsv, sha256, type LegacyRow } from '../../domain/import.js';
+import { compareLegacyRows, IMPORTER_VERSION, LEGACY_HEADER, parseLegacyCsv, projectLegacySourceAttribution, sha256, type LegacyRow } from '../../domain/import.js';
 import { MAX_SOURCE_ARCHIVE_BYTES, reviewSnapshotSchema } from '../../shared/transfer.js';
 import { cycleRelationSchema, dateValueSchema, eventFields, instantSchema, linkDataSchema, positiveVersionSchema, shortTextSchema, uuidSchema, type DateValue } from '../../shared/model.js';
 import { normalizeTrack } from '../../domain/identity.js';
@@ -143,14 +143,19 @@ export function createImportService(database: ReturnType<typeof createDatabase>)
     }
     let evidenceId: string | null = null;
     const projectableLinks = row.links.filter((link) => ['web', 'private', 'local'].includes(link.classification) && link.originalText.trim() !== '' && linkDataSchema.safeParse({ originalUrl: link.originalText, comparisonUrl: null, kind: 'legado', isLocal: link.classification === 'local', isPrivate: link.classification !== 'web' }).success);
+    const pendingIssues = file.parsed.issues.filter((v) => v.row === index + 2).map((v) => v.code);
+    if (!input.interpretation.provider || !row.jobCode.trim()) pendingIssues.push('unresolved_identity');
+    if (projectableLinks.length !== row.links.length) pendingIssues.push('unprojected_reference');
     if (result.result === 'imported') {
       const confirms = (!existing || existing.submission_status !== 'confirmado' && input.decisions?.status_envio === 'source') && row.submissionStatus === 'confirmado';
       const links = projectableLinks.filter((link) => !existing || (link.originalText === row.fields.url_original ? input.decisions?.url_original : input.decisions?.links_alternativos) === 'source');
-      evidenceId = await appendSourceEvidence(tx, actor.ownerId, result.applicationId, { ...row, links }, confirms, input.decisions);
+      const { source, warning } = projectLegacySourceAttribution(row.source, input.decisions?.fonte);
+      if (warning) pendingIssues.push(warning);
+      evidenceId = await appendSourceEvidence(tx, actor.ownerId, result.applicationId, { ...row, links }, confirms, input.decisions, source);
     }
     for (const event of input.historicalEvents) await appendHistoricalEvent(tx, actor.ownerId, result.applicationId, event, evidenceId);
     await tx.query(`INSERT INTO career.import_rows(owner_id,source_file_id,row_number,row_hash,original_text,legacy_id,target_application_id,result,pending_issues,applied_target_version,resolution,unit_result)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [actor.ownerId, file.id, index + 2, row.rawRowHash, row.raw, row.legacyId, result.applicationId, result.result, [...file.parsed.issues.filter((v) => v.row === index + 2).map((v) => v.code), ...(!input.interpretation.provider || !row.jobCode.trim() ? ['unresolved_identity'] : []), ...(projectableLinks.length !== row.links.length ? ['unprojected_reference'] : [])], baseline, { request: input, appliedInterpretation: result.result === 'skipped' ? prior!.resolution.appliedInterpretation : input.interpretation }, result]);
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [actor.ownerId, file.id, index + 2, row.rawRowHash, row.raw, row.legacyId, result.applicationId, result.result, pendingIssues, baseline, { request: input, appliedInterpretation: result.result === 'skipped' ? prior!.resolution.appliedInterpretation : input.interpretation }, result]);
     const retainedOrder = existing ? (existing.cycle_order === null ? null : Number(existing.cycle_order)) : row.cycleOrder;
     if (retainedOrder !== null) await tx.query('UPDATE career.cycles SET next_order=$3,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2 AND next_order<$3', [actor.ownerId, run.unit_state.cycleId, retainedOrder + 1]);
     return result;
@@ -241,12 +246,10 @@ async function updateSourceFields(tx: AuthenticatedTransaction, owner: string, e
   if (!opportunityPatch.every(([, value]) => shortTextSchema.nullable().safeParse(value).success)) throw new SafeError('INVALID_INPUT');
   if (opportunityPatch.length) await tx.query(`UPDATE career.opportunities SET ${opportunityPatch.map(([key], i) => `${key}=$${i + 3},`).join('')}version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2`, [owner, existing.opportunity_id, ...opportunityPatch.map(([, value]) => value)]);
 }
-async function appendSourceEvidence(tx: AuthenticatedTransaction, owner: string, applicationId: string, row: LegacyRow, confirms: boolean, decisions: ApplicationInput['decisions']) {
-  // O texto bruto fica completo mesmo quando a decisão rejeita sua projeção efetiva.
-  if (decisions?.fonte !== 'current' && !shortTextSchema.safeParse(row.source).success) throw new SafeError('INVALID_INPUT');
+async function appendSourceEvidence(tx: AuthenticatedTransaction, owner: string, applicationId: string, row: LegacyRow, confirms: boolean, decisions: ApplicationInput['decisions'], source: string | null) {
   const currentLinks = (await tx.query<{ original_url: string }>('SELECT original_url FROM career.links WHERE owner_id=$1 AND application_id=$2', [owner, applicationId])).rows;
   if (new Set([...currentLinks.map((v) => v.original_url), ...row.links.map((v) => v.originalText)]).size > 50) throw new SafeError('INVALID_INPUT');
-  const evidence = (await tx.query<{ id: string }>("INSERT INTO career.evidence(owner_id,kind,original_text,source,occurred_date) VALUES($1,'texto_legado',$2,$3,$4) RETURNING id", [owner, row.raw, decisions?.fonte === 'current' ? null : row.source || null, unknownDate])).rows[0]!;
+  const evidence = (await tx.query<{ id: string }>("INSERT INTO career.evidence(owner_id,kind,original_text,source,occurred_date) VALUES($1,'texto_legado',$2,$3,$4) RETURNING id", [owner, row.raw, source, unknownDate])).rows[0]!;
   // A confirmação usa o resultado reconciliado; a data rejeitada continua somente no original.
   const occurredDate = confirms ? (await tx.query<{ submitted_date: DateValue }>('SELECT submitted_date FROM career.applications WHERE owner_id=$1 AND id=$2', [owner, applicationId])).rows[0]!.submitted_date : unknownDate;
   await tx.query("INSERT INTO career.events(owner_id,application_id,kind,state,occurred_date,evidence_id,source_text,result_text) VALUES($1,$2,$3,'informado',$4,$5,$6,$7)", [owner, applicationId, confirms ? 'envio_confirmado' : 'nota', occurredDate, evidence.id, decisions?.evidencia_envio === 'current' ? null : row.evidence || null, decisions?.etapa === 'current' ? null : row.stageNarrative || null]);

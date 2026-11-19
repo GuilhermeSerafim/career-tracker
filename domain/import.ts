@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { parse } from 'csv-parse/sync';
 import { z } from 'zod';
-import { dateValueSchema, isCalendarDay, positiveVersionSchema, sha256Schema, submissionStatusSchema, type DateValue } from '../shared/model.js';
+import { dateValueSchema, isCalendarDay, positiveVersionSchema, sha256Schema, shortTextSchema, submissionStatusSchema, type DateValue } from '../shared/model.js';
 import { MAX_SOURCE_ARCHIVE_BYTES } from '../shared/transfer.js';
 
 export const IMPORTER_VERSION = 'legacy-preview/2' as const;
@@ -144,6 +144,15 @@ export function parseLegacyCsv(input: string | Uint8Array): LegacyParse {
     start = record.info.bytes;
   }
   return legacyParseSchema.parse(result);
+}
+
+export const UNPROJECTED_SOURCE_ATTRIBUTION = 'unprojected_source_attribution';
+
+/** Projeção aplicada à evidência; a prévia e o texto bruto permanecem integrais. */
+export function projectLegacySourceAttribution(source: string, decision?: 'source' | 'current') {
+  if (decision === 'current') return { source: null, warning: null };
+  const parsed = shortTextSchema.safeParse(source);
+  return parsed.success ? { source: parsed.data || null, warning: null } : { source: null, warning: UNPROJECTED_SOURCE_ATTRIBUTION };
 }
 
 export const previousImportSchema = z.strictObject({ legacyId: z.string().max(500).regex(/^V\d+$/), rawRowHash: sha256Schema, importedApplicationVersion: positiveVersionSchema, currentApplicationVersion: positiveVersionSchema });

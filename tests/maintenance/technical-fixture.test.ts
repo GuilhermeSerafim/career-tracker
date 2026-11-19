@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import pg from 'pg';
 import { runLocalDatabase, localDatabaseConfig, validateSecurityCatalog } from '../../scripts/local-db';
@@ -14,6 +16,10 @@ import { authenticateBearer, authenticateAgent } from '../../server/auth';
 import { startApi } from '../helpers/api';
 import { createExportService } from '../../server/services/exports';
 import { readSnapshot } from '../../server/repositories/transfers';
+import { canonicalJson } from '../../domain/export';
+import { LEGACY_HEADER, parseLegacyCsv } from '../../domain/import';
+import { reconcileCutoverFiles } from '../../scripts/cutover-check';
+import { createLegacyPreview } from '../../scripts/import-legacy';
 
 const human = 'Bearer fictional.owner.session';
 const path = '/api/v1/maintenance/technical-fixture';
@@ -207,6 +213,151 @@ async function fixture(t: TestContext, owner: string, restoreReady = false, mana
   return {admin,post,getSettings,commandKeys,db,ownerAuth,apiConfig:config.database,restoreConfig:localDatabaseConfig(url.href),
     async close() { await api.close(); await db.close(); await admin.end(); }};
 }
+
+test('a atribuição longa do legado sobrevive à importação, exportação e restauração', async t => {
+  const owner = randomUUID();
+  const directory = await mkdtemp(join(tmpdir(), 'career-source-projection-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const source = await fixture(t, owner, true);
+  t.after(() => source.close());
+  const actor = await source.ownerAuth(human);
+  const exports = createExportService(source.db);
+  const role = await source.db.transaction(actor, async (tx) => (await tx.query(
+    'SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]);
+  assert.deepEqual(role, { rolname: 'career_api', rolsuper: false, rolbypassrls: false });
+  const attribution = '  Origem fictícia, com "aspas" e\r\nquebra de linha. '.padEnd(642, 'á');
+  const boundary = 'Fonte no limite fictício. '.padEnd(500, 'a');
+  const normal = '  Fonte fictícia  ';
+  const csvRow = (id: string, value: string) => [id, 'Empresa fictícia', 'Vaga fictícia', 'Portal fictício', '', '',
+    '', '', 'confirmado', '', 'Relato fictício', '', '', '', value, '', '']
+    .map((field) => '"' + field.replaceAll('"', '""') + '"').join(',') + '\r\n';
+  const legacyIds = ['V920', 'V921', 'V922'];
+  const rawRows = [attribution, boundary, normal].map((value, i) => csvRow(legacyIds[i]!, value));
+  const csv = Buffer.from(LEGACY_HEADER.join(',') + '\r\n' + rawRows.join(''));
+  const sourceDir = await mkdtemp(join(directory, 'source-'));
+  const privateDir = await mkdtemp(join(directory, 'private-'));
+  await writeFile(join(sourceDir, 'ficticio.csv'), csv);
+  const preview = await createLegacyPreview({ sourceDir, privateDir, files: ['ficticio.csv'] });
+  const apply = (unit: string, data: unknown, key = randomUUID()) => source.post({ unit, data }, key, '/api/v1/imports/apply');
+  const prepare = { manifest: preview.manifest, sources: [{ name: 'ficticio.csv', bytesBase64: csv.toString('base64') }],
+    cycle: { id: randomUUID(), expectedVersion: null, resetDate: unknownDate, resetMarker: null, isCurrent: true } };
+  const prepared = await apply('prepare', prepare);
+  assert.equal(prepared.status, 200, JSON.stringify(prepared.json));
+  const runId: unknown = prepared.json.runId;
+  assert.ok(typeof runId === 'string');
+  const interpretation = { track: null, applicationInstance: 'ficticia', cycleRelation: 'unknown', kind: 'desconhecido', provider: null, tenant: null };
+  const request = (legacyId: string) => ({ runId, legacyId, expectedVersion: null, expectedOpportunityVersion: null, interpretation, decisions: null });
+  const applicationResponses: { applicationId: string; version: number; result: 'imported' }[] = [];
+  for (const legacyId of legacyIds) {
+    const response = await apply('application', request(legacyId));
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    const { applicationId, version, result } = response.json;
+    assert.ok(typeof applicationId === 'string');
+    assert.equal(version, 1);
+    assert.equal(result, 'imported');
+    applicationResponses.push({ applicationId, version, result });
+  }
+  const complete = await apply('complete', { runId, reviewRequired: false });
+  assert.equal(complete.status, 200, JSON.stringify(complete.json));
+  const snapshot = await exports.json(actor);
+  const evidence = snapshot.entities.flatMap((entity) => entity.table === 'evidence' ? [entity.data] : []);
+  const events = snapshot.entities.flatMap((entity) => entity.table === 'events' ? [entity.data] : []);
+  const rows = snapshot.entities.flatMap((entity) => entity.table === 'import_rows' ? [entity.data] : []);
+  const warning = 'unprojected_source_attribution';
+  assert.equal(preview.manifest.parsed.issues.some(({ code }) => code === warning), false);
+  assert.equal(snapshot.entities.some((entity) => entity.table === 'import_runs' && entity.data.pendingIssues.includes(warning)), false);
+  for (const [i, raw] of rawRows.entries()) {
+    const legacyId = legacyIds[i];
+    const result = applicationResponses[i]!;
+    const app = snapshot.entities.find((entity) => entity.table === 'applications' && entity.data.id === result.applicationId);
+    const stored = evidence.find((entry) => entry.originalText === raw);
+    const importRow = rows.find((entry) => entry.legacyId === legacyId);
+    assert.equal(app?.table, 'applications');
+    assert.equal(app.data.legacyId, legacyId);
+    assert.equal(app.data.displayId, legacyId);
+    assert.deepEqual(app.data.submittedDate, unknownDate);
+    assert.ok(stored);
+    assert.equal(stored.source, [null, boundary, normal][i]);
+    assert.deepEqual(stored.occurredDate, unknownDate);
+    assert.equal(importRow?.originalText, raw);
+    assert.equal(importRow.pendingIssues.filter((code) => code === warning).length, i === 0 ? 1 : 0);
+    const confirmations = events.filter((event) => event.applicationId === result.applicationId && event.kind === 'envio_confirmado');
+    assert.equal(confirmations.length, 1);
+    assert.equal(confirmations[0]?.evidenceId, stored.id);
+    assert.deepEqual(confirmations[0]?.occurredDate, unknownDate);
+  }
+  const archived = snapshot.entities.find((entity) => entity.table === 'source_files');
+  assert.equal(archived?.table, 'source_files');
+  assert.deepEqual(Buffer.from(archived.data.originalBytesBase64, 'base64'), csv);
+  assert.equal(archived.data.originalText, csv.toString('utf8'));
+  const exportedCsv = parseLegacyCsv(await exports.csv(actor));
+  assert.equal(exportedCsv.blocked, false);
+  assert.equal(exportedCsv.rows.find((row) => row.legacyId === legacyIds[0])?.source, attribution);
+
+  // Uma chave HTTP nova atravessa o controle de replay da própria unidade.
+  const replay = await apply('application', request(legacyIds[0]!));
+  assert.equal(replay.status, 200, JSON.stringify(replay.json));
+  assert.deepEqual(replay.json, applicationResponses[0]);
+  assert.deepEqual((await exports.json(actor)).entities, snapshot.entities);
+
+  const exportFile = join(directory, 'export.json');
+  const check = async (snapshotToCheck: typeof snapshot, manifestDirectory = preview.directory) => {
+    await writeFile(exportFile, canonicalJson(snapshotToCheck));
+    const result = await reconcileCutoverFiles(join(manifestDirectory, 'manifest.json'), exportFile);
+    assert.equal(result.exitCode, 0, JSON.stringify(result.discrepancies));
+    return result.counts;
+  };
+  assert.equal((await check(snapshot)).atribuicoes_de_fonte_preservadas_no_original, 1);
+  const destination = await fixture(t, owner, true);
+  t.after(() => destination.close());
+  const restored = await restorePrivate({ actor, ownerId: owner, database: destination.restoreConfig, snapshot, mode: 'apply' });
+  assert.equal(restored.state, 'completed');
+  const copy = await createExportService(destination.db).json(actor);
+  assert.deepEqual(copy.entities.filter((entity) => !(entity.table === 'audit_log' && entity.data.id === restored.runId)), snapshot.entities);
+  assert.equal((await check(copy)).atribuicoes_de_fonte_preservadas_no_original, 1);
+
+  // Atribuição já aplicada fica no baseline da linha que o novo lote pula.
+  const nextRows = [rawRows[0]!, csvRow(legacyIds[1]!, attribution), csvRow(legacyIds[2]!, attribution)];
+  const deltaCsv = Buffer.from(LEGACY_HEADER.join(',') + '\r\n' + nextRows.join(''));
+  await writeFile(join(sourceDir, 'ficticio.csv'), deltaCsv);
+  const delta = await createLegacyPreview({ sourceDir, privateDir, files: ['ficticio.csv'] });
+  const cycle = snapshot.entities.find((entity) => entity.table === 'cycles');
+  assert.equal(cycle?.table, 'cycles');
+  const deltaPrepared = await apply('prepare', { ...prepare, manifest: delta.manifest,
+    sources: [{ name: 'ficticio.csv', bytesBase64: deltaCsv.toString('base64') }],
+    cycle: { ...prepare.cycle, expectedVersion: cycle.data.version } });
+  assert.equal(deltaPrepared.status, 200, JSON.stringify(deltaPrepared.json));
+  const deltaRunId: unknown = deltaPrepared.json.runId;
+  assert.ok(typeof deltaRunId === 'string');
+  for (const [i, legacyId] of legacyIds.entries()) {
+    const decisions = i === 0 ? null : Object.fromEntries(LEGACY_HEADER.map((column) =>
+      [column, column === 'evidencia_envio' || column === 'fonte' && i === 1 ? 'source' : 'current']));
+    const response = await apply('application', { ...request(legacyId), runId: deltaRunId, decisions,
+      expectedVersion: decisions ? 1 : null, expectedOpportunityVersion: decisions ? 1 : null });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    assert.equal(response.json.result, i === 0 ? 'skipped' : 'imported');
+    assert.equal(response.json.applicationId, applicationResponses[i]!.applicationId);
+  }
+  const deltaComplete = await apply('complete', { runId: deltaRunId, reviewRequired: false });
+  assert.equal(deltaComplete.status, 200, JSON.stringify(deltaComplete.json));
+  const reconciled = await exports.json(actor);
+  const deltaFile = reconciled.entities.find((entity) => entity.table === 'source_files' && entity.data.importRunId === deltaRunId);
+  assert.equal(deltaFile?.table, 'source_files');
+  const deltaSourceFileId = deltaFile.data.id;
+  const deltaRows = reconciled.entities.flatMap((entity) => entity.table === 'import_rows' && entity.data.sourceFileId === deltaSourceFileId ? [entity.data] : []);
+  for (const [i, raw] of nextRows.entries()) {
+    const entry = deltaRows.find((row) => row.originalText === raw);
+    assert.ok(entry);
+    assert.equal(entry.pendingIssues.includes(warning), i === 1);
+    const matches = reconciled.entities.flatMap((entity) => entity.table === 'evidence' && entity.data.originalText === raw ? [entity.data] : []);
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0]?.source, null);
+  }
+  const counts = await check(reconciled, delta.directory);
+  assert.equal(counts.atribuicoes_de_fonte_preservadas_no_original, 2);
+  assert.equal(counts.reaplicacoes_com_baseline, 1);
+  assert.equal(counts.textos_por_decisao_somente_no_original, 1);
+});
 
 test('a rota normalizada de manutenção recusa o agente antes da autenticação', async t => {
   const config = {ownerUserId:randomUUID(),supabaseUrl:'http://127.0.0.1',supabasePublishableKey:'sb_publishable_test',
