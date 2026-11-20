@@ -21,6 +21,7 @@ import { canonicalJson } from '../../domain/export';
 import { connectTestDatabase } from '../helpers/database';
 import { IMPORTER_VERSION, LEGACY_HEADER, PARSER_VERSION, sha256 } from '../../domain/import';
 import { createImportService } from '../../server/services/imports';
+import { createReviewService } from '../../server/services/reviews';
 import { loadAppliedImportStates } from '../../server/repositories/transfers';
 import { activityEventProjection } from '../../server/repositories/activity';
 import { instantNanoseconds } from '../../domain/dates';
@@ -141,7 +142,7 @@ it('exporta origem completa, retoma no destino e preserva história, registros f
     sourceDb = src.db;
     const dst = await runtime(process.env.LOCAL_RESTORE_TEST_DATABASE_URL!, true);
     const id = () => randomUUID();
-    const op = id(), app = id(), alias = id(), contact = id(), evidence = id(), event = id(), cv = id(), cycle = id(), batch = id(), review1 = id(), review2 = id(), oldRun = id(), newRun = id(), oldFile = id(), newFile = id();
+    const op = id(), app = id(), alias = id(), contact = id(), evidence = id(), event = id(), aliasEvent = id(), aliasCorrection = id(), cv = id(), cycle = id(), batch = id(), review1 = id(), review2 = id(), oldRun = id(), newRun = id(), oldFile = id(), newFile = id();
     const time = '2026-11-16T10:20:30.123456+00:00';
     const unknown = { precision: 'unknown', value: null };
     const interpretation = { track: null, applicationInstance: 'initial', cycleRelation: 'unknown', kind: 'desconhecido', provider: 'fixture', tenant: 'synthetic' };
@@ -157,6 +158,9 @@ it('exporta origem completa, retoma no destino e preserva história, registros f
         await sourceAdmin.query("INSERT INTO career.contacts(id,owner_id,name) VALUES($1,$2,'Contato fictício')", [contact, owner]);
         await sourceAdmin.query("INSERT INTO career.evidence(id,owner_id,kind,original_text,captured_at) VALUES($1,$2,'relato_usuario','Texto de evidência',$3)", [evidence, owner, time]);
         await sourceAdmin.query("INSERT INTO career.events(id,owner_id,application_id,kind,state,evidence_id,created_at,updated_at) VALUES($1,$2,$3,'nota','informado',$4,$5,$5)", [event, owner, app, evidence, time]);
+        await sourceAdmin.query("INSERT INTO career.events(id,owner_id,application_id,kind,state,evidence_id,created_at,updated_at) VALUES($1,$2,$3,'avaliacao','concluido',$4,$5,$5)", [aliasEvent, owner, alias, evidence, time]);
+        await sourceAdmin.query("INSERT INTO career.events(id,owner_id,application_id,kind,state,evidence_id,created_at,updated_at,supersedes_event_id,result_text) VALUES($1,$2,$3,'nota','informado',$4,$5,$5,$6,$7)",
+            [aliasCorrection, owner, alias, evidence, time, aliasEvent, ' Correção com formatação.\r\n']);
         await sourceAdmin.query("INSERT INTO career.tasks(owner_id,application_id,contact_id,title) VALUES($1,$2,$3,'Ação pendente')", [owner, app, contact]);
         await sourceAdmin.query("INSERT INTO career.resume_refs(id,owner_id,label) VALUES($1,$2,'CV informado')", [cv, owner]);
         await sourceAdmin.query('INSERT INTO career.application_resumes(owner_id,application_id,resume_id,is_active) VALUES($1,$2,$3,false)', [owner, app, cv]);
@@ -169,6 +173,11 @@ it('exporta origem completa, retoma no destino e preserva história, registros f
         const provenance = { historicalClosedDate: { precision: 'day', certainty: 'exact', value: '2026-11-14' }, snapshotTimeMeaning: 'import_capture' };
         await sourceAdmin.query("INSERT INTO career.review_versions(id,owner_id,batch_id,version_number,type,snapshot,population_ids,event_ids,closed_at,import_provenance,created_at,updated_at) VALUES($1,$2,$3,1,'original',$4,$5,$6,NULL,$7,$8,$8)", [review1, owner, batch, snapshot, [app], [event], provenance, time]);
         await sourceAdmin.query("INSERT INTO career.review_versions(id,owner_id,batch_id,version_number,type,snapshot,population_ids,event_ids,predecessor_id,created_at,updated_at) VALUES($1,$2,$3,2,'revision',$4,$5,$6,$7,$8,$8)", [review2, owner, batch, snapshot, [app], [event], review1, time]);
+        const batchVersion = (await sourceAdmin.query<{ version: number }>('SELECT version FROM career.batches WHERE id=$1', [batch])).rows[0]!.version;
+        const rectified = await createReviewService(src.db)(src.actor, {
+            idempotencyKey: id(),
+            command: { operation: 'revise_review', batch: { id: batch, expectedVersion: batchVersion }, predecessorId: review2, type: 'rectification', reason: 'Evidência da candidatura identificada.', evidence: { id: evidence }, narrative: null, decisions: [] },
+        });
         for (const [kind, result, column] of [['application', app, 'result_application_id'], ['cycle', cycle, 'result_cycle_id'], ['resume_ref', cv, 'result_resume_id'], ['evidence', evidence, 'result_evidence_id']] as const)
             await sourceAdmin.query(`INSERT INTO career.creation_requests(owner_id,entity_type,client_id,payload_hash,${column}) VALUES($1,$2,$3,$4,$5)`, [owner, kind, id(), 'a'.repeat(64), result]);
         for (const [run, file, raw, version, created] of [[oldRun, oldFile, oldRaw, 1, '2026-11-16T12:00:00.123456Z'], [newRun, newFile, newRaw, 3, '2026-11-16T11:00:00.654321Z']] as const) {
@@ -208,6 +217,15 @@ it('exporta origem completa, retoma no destino e preserva história, registros f
         await restorePrivate({ database: dst.maintenance, ownerId: owner, actor: dst.actor, snapshot: exported, mode: 'resume', runId, chunkSize: 4 });
         const restored = await createExportService(dst.db).json(dst.actor);
         expect(canonicalJson(restored.entities.filter(r => !(r.table === 'audit_log' && r.data.id === runId)))).toBe(canonicalJson(exported.entities));
+        const improved = restored.entities.find((row) => row.table === 'review_versions' && row.data.id === rectified.body.reviewId);
+        expect(improved?.data).toMatchObject({ populationIds: [app], snapshot: {
+            calculationVersion: 'metrics-v1/review-v2',
+            events: expect.arrayContaining([
+                expect.objectContaining({ id: aliasEvent, applicationId: alias }),
+                expect.objectContaining({ id: aliasCorrection, applicationId: alias, kind: 'nota', state: 'informado', supersedesEventId: aliasEvent, resultText: ' Correção com formatação.\r\n', sourceText: null }),
+            ]),
+            relatedCanonicalApplications: [expect.objectContaining({ id: alias, canonicalApplicationId: app })],
+        } });
         const knowledge = await dst.db.transaction(dst.actor, tx => activityEventProjection(tx, owner, event));
         expect(knowledge.recordedAt).toBe('2026-11-16T10:20:30.123456Z');
         expect(instantNanoseconds(knowledge.recordedAt)).toBeGreaterThan(instantNanoseconds('2026-11-16T10:20:30.123455Z'));

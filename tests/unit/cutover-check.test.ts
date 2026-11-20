@@ -1,11 +1,11 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import pg from 'pg';
 import { afterEach, expect, it } from 'vitest';
 import { buildReviewSnapshot } from '../../domain/cycles';
-import { buildSnapshot, canonicalJson, transferHash } from '../../domain/export';
+import { buildSnapshot, canonicalJson, TransferError, transferHash } from '../../domain/export';
 import { IMPORTER_VERSION, LEGACY_HEADER, parseLegacyCsv, sha256 } from '../../domain/import';
 import { createLegacyPreview, type PreviewManifest } from '../../scripts/import-legacy';
 import { analyticsEventSchema, analyticsRowSchema } from '../../shared/analytics';
@@ -307,11 +307,13 @@ function importInsertAudit(input: Fixture, requestId: string, auditId: number, e
     occurredAt: instant, entityType, entityId, operation: 'insert', beforeData: null, afterData, diff, createdAt: instant });
 }
 
-async function auditedHistoricalReplay() {
+async function auditedHistoricalReplay(skipVersion = 1) {
   const input = await fixture();
   const [prior] = skippedImport(input);
   const applied = prior!;
   const selected = input.importRows[0]!;
+  selected.unitResult = { applicationId: selected.targetApplicationId, version: skipVersion, result: 'skipped' };
+  input.applications[0]!.version = skipVersion;
   resolutionOf(applied).request.historicalEvents = [historicalEvent];
   resolutionOf(selected).request.historicalEvents = [historicalEvent];
   const { clientId, ...fields } = historicalEvent;
@@ -348,6 +350,30 @@ it('aceita o replay auditado do evento já registrado com a evidência original 
   const { input } = await auditedHistoricalReplay();
   await input.save();
   expect(await check(input)).toMatchObject({ exitCode: 0, counts: { eventos_historicos_verificados: 1 } });
+});
+
+it('aceita o recibo de skip que registra a versão do retorno posterior ao baseline', async () => {
+  const { input, selected } = await auditedHistoricalReplay(2);
+  expect(selected.appliedTargetVersion).toBe(1);
+  expect(selected.unitResult).toMatchObject({ version: 2, result: 'skipped' });
+  await input.save();
+  expect(await check(input)).toMatchObject({ exitCode: 0, discrepancies: {} });
+});
+
+it.each(['applied', 'selected'] as const)('recusa recibo auditado divergente de %s mesmo com hashes válidos', async (name) => {
+  const scenario = await auditedHistoricalReplay(2);
+  const row = scenario[name];
+  const audit = scenario.input.entities.find((entry) => entry.table === 'audit_log' && entry.data.entityType === 'import_rows' && entry.data.entityId === row.id);
+  if (audit?.table !== 'audit_log') throw new Error('Fixture sem auditoria de inserção.');
+  const mismatch = { ...(row.unitResult as Record<string, unknown>), version: 3 };
+  audit.data.afterData = { ...(audit.data.afterData as Record<string, unknown>), unit_result: mismatch };
+  audit.data.diff = { ...(audit.data.diff as Record<string, unknown>), unit_result: { before: null, after: mismatch } };
+  await scenario.input.save();
+  expect(await check(scenario.input)).toMatchObject({ exitCode: 2, discrepancies: { auditoria_da_unidade_divergente: 1 } });
+  const cli = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/cutover-check.ts',
+    '--manifest', scenario.input.manifestFile, '--export', scenario.input.exportFile], { encoding: 'utf8' });
+  expect(cli.status).toBe(2);
+  expect(cli.stdout).toContain('auditoria_da_unidade_divergente');
 });
 
 it('retém o skip quando só a sua resolução perde o pedido de evento ainda auditado', async () => {
@@ -598,6 +624,10 @@ it.each(['ausente', 'duplicado', 'fora de ordem', 'ordem externa alterada'])('re
   if (defect === 'duplicado') inner[1] = inner[0]!;
   if (defect === 'fora de ordem') inner.reverse();
   if (defect === 'ordem externa alterada') rectification.populationIds.reverse();
+  if (defect === 'ausente' || defect === 'duplicado') {
+    await expect(input.save()).rejects.toThrow(TransferError);
+    return;
+  }
   await input.save();
   expect(await check(input)).toMatchObject({ exitCode: 2, discrepancies: { cadeia_de_revisao_divergente: 1 } });
 });

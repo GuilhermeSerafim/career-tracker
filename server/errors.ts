@@ -8,6 +8,7 @@ const errors = {
   NOT_FOUND: [404, 'Registro não encontrado.'],
   METHOD_NOT_ALLOWED: [405, 'Método não permitido para esta rota.'],
   CONFLICT: [409, 'O registro foi alterado. Confira a versão atual e tente novamente.'],
+  ANALYTICS_SELECTION_STALE: [409, 'A lista mudou desde o cálculo desta análise. Recalcule para abrir a seleção atual.'],
   IDEMPOTENCY_CONFLICT: [409, 'Esta chave já foi usada com outros dados.'],
   PAYLOAD_TOO_LARGE: [413, 'Os dados excedem o limite permitido.'],
   EXPORT_TOO_LARGE: [413, 'A exportação completa excede o limite HTTP de 4.000.000 bytes. Use a exportação local privada.'],

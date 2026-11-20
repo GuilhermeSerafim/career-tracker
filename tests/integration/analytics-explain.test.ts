@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { syntheticCareerApi } from '../helpers/synthetic-career';
 import { connectTestDatabase } from '../helpers/database';
-import type { AnalyticsResult } from '../../shared/analytics';
+import type { AnalyticsResponse } from '../../shared/analytics';
 let fixture: Awaited<ReturnType<typeof syntheticCareerApi>>;
 const ids = Array.from({ length: 306 }, () => randomUUID());
 const query = { operation: 'metrics', period: { from: '2026-11-01', to: '2026-11-17' }, population: 'confirmed', dimension: 'batch', submissionScope: 'all_dates' };
 const day = { precision: 'day', certainty: 'exact', value: '2026-11-10' };
-let result: AnalyticsResult;
+let result: AnalyticsResponse;
 const request = (explain: unknown, extra: Record<string, string> = {}, headers?: Record<string, string>) => fixture.request(`/api/v1/applications?${new URLSearchParams({ query: JSON.stringify(result.query), explain: JSON.stringify(explain), limit: '100', ...extra })}`, { headers: headers ?? fixture.headers });
 beforeAll(async () => {
   fixture = await syntheticCareerApi(); const admin = await connectTestDatabase();
@@ -24,7 +24,7 @@ beforeAll(async () => {
     await admin.query(`INSERT INTO career.events(owner_id,application_id,kind,state,occurred_date) SELECT $1,(r->>'id')::uuid,'retorno_substantivo','informado',(r->'date')::career.date_value FROM jsonb_array_elements($2::jsonb) r`, [fixture.owner, JSON.stringify(events)]);
   } finally { await admin.end(); }
   const response = await fixture.request(`/api/v1/analytics?${new URLSearchParams({ query: JSON.stringify(query) })}`, { headers: fixture.headers });
-  expect(response.status).toBe(200); result = response.json as unknown as AnalyticsResult;
+  expect(response.status).toBe(200); result = response.json as unknown as AnalyticsResponse;
 });
 afterAll(async () => { await fixture?.close(); });
 async function all(explain: unknown, expected: readonly string[]) {
@@ -107,7 +107,7 @@ it('keeps equal completed and events-period counts attached to their distinct ex
     await admin.query(`INSERT INTO career.events(owner_id,application_id,kind,state,occurred_date) VALUES($1,$2,'retorno_substantivo','informado',$4),($1,$3,'avaliacao','convidado',$4)`, [fixture.owner,a,b,{ ...day, value: '2026-11-12' }]);
   } finally { await admin.end(); }
   const response = await fixture.request(`/api/v1/analytics?${new URLSearchParams({ query: JSON.stringify({ ...query, submissionScope: 'submitted_in_period', filters: { company: ['Separate populations'] } }) })}`, { headers: fixture.headers });
-  expect(response.status).toBe(200); const original = result; result = response.json as unknown as AnalyticsResult;
+  expect(response.status).toBe(200); const original = result; result = response.json as unknown as AnalyticsResponse;
   try {
     expect(result.conversions.interview.applicationIds).toEqual([a]);
     expect(result.completed.interview.applicationIds).toEqual([a]);
@@ -121,7 +121,7 @@ it('keeps equal completed and events-period counts attached to their distinct ex
     for (const kind of ['completed', 'eventsCategory']) for (const category of ['__proto__', 'constructor', 'other']) expect((await request({ kind, category })).status).toBe(400);
     expect((await request({ kind: 'group', collection: 'discoveryChannel', key: 'canal_desconhecido', isMissing: true, category: 'other' })).status).toBe(400);
     const allDates = await fixture.request(`/api/v1/analytics?${new URLSearchParams({ query: JSON.stringify({ ...result.query, submissionScope: 'all_dates' }) })}`, { headers: fixture.headers });
-    expect(allDates.status).toBe(200); result = allDates.json as unknown as AnalyticsResult;
+    expect(allDates.status).toBe(200); result = allDates.json as unknown as AnalyticsResponse;
     const group = result.groups.discoveryChannel[0]!;
     expect(group.conversions.response).toMatchObject({ numerator: 1, denominator: 2, applicationIds: [a] });
     expect(group.conversions.assessment).toMatchObject({ numerator: 1, denominator: 2, applicationIds: [b] });
@@ -129,6 +129,77 @@ it('keeps equal completed and events-period counts attached to their distinct ex
     await all({ kind: 'group', collection: 'discoveryChannel', key: group.key, isMissing: true, category: 'response' }, [a]);
     await all({ kind: 'group', collection: 'discoveryChannel', key: group.key, isMissing: true, category: 'assessment' }, [b]);
   } finally { result = original; }
+});
+
+it('explains effective occurrence-date buckets in event units through exact filtered application lists', async () => {
+  const admin = await connectTestDatabase();
+  const opportunity = randomUUID(), a = randomUUID(), b = randomUUID();
+  const undated = { precision: 'unknown', value: null };
+  const predecessor = randomUUID(), known = randomUUID();
+  try {
+    await admin.query('INSERT INTO career.opportunities(id,owner_id,company) VALUES($1,$2,$3)', [opportunity, fixture.owner, 'Occurrence coverage']);
+    await admin.query(`INSERT INTO career.applications(id,owner_id,opportunity_id,display_id,application_instance,submission_status,submitted_date) VALUES($1,$3,$4,'N999993','one','confirmado',$5),($2,$3,$4,'N999994','two','confirmado',$5)`, [a, b, fixture.owner, opportunity, day]);
+    await admin.query(`INSERT INTO career.events(owner_id,application_id,kind,state,occurred_date) VALUES($1,$2,'avaliacao','concluido',$4),($1,$2,'entrevista','concluido',$4),($1,$3,'nota','informado',$5)`, [fixture.owner, a, b, undated, { precision: 'month', certainty: 'exact', value: '2026-11' }]);
+    await admin.query(`INSERT INTO career.events(id,owner_id,application_id,kind,state,occurred_date) VALUES($1,$2,$3,'avaliacao','concluido',$4)`, [predecessor, fixture.owner, b, undated]);
+    await admin.query(`INSERT INTO career.events(id,owner_id,application_id,kind,state,occurred_date,supersedes_event_id) VALUES($1,$2,$3,'nota','informado',$4,$5)`, [known, fixture.owner, b, day, predecessor]);
+  } finally { await admin.end(); }
+  const response = await fixture.request(`/api/v1/analytics?${new URLSearchParams({ query: JSON.stringify({ ...query, filters: { company: ['Occurrence coverage'] } }) })}`, { headers: fixture.headers });
+  expect(response.status).toBe(200);
+  const original = result;
+  result = response.json as unknown as AnalyticsResponse;
+  try {
+    await all({ kind: 'occurrenceDateCoverage', bucket: 'unknown', selectionKey: result.occurrenceDateDrilldown.unknown }, [a]);
+    await all({ kind: 'occurrenceDateCoverage', bucket: 'imprecise', selectionKey: result.occurrenceDateDrilldown.imprecise }, [b]);
+    await all({ kind: 'occurrenceDateCoverage', bucket: 'exactDay', selectionKey: result.occurrenceDateDrilldown.exactDay }, [b]);
+    expect((await request({ kind: 'occurrenceDateCoverage', bucket: 'unknown' })).status).toBe(409);
+    expect((await request({ kind: 'occurrenceDateCoverage', bucket: 'unknown', selectionKey: result.occurrenceDateDrilldown.imprecise })).status).toBe(409);
+    expect((await request({ kind: 'occurrenceDateCoverage', bucket: 'unknown', selectionKey: 'invalid' })).status).toBe(400);
+    expect((await request({ kind: 'occurrenceDateCoverage', bucket: 'constructor' })).status).toBe(400);
+    expect(result.occurrenceDateCoverage).toMatchObject({ unit: 'event', denominator: 4, buckets: { unknown: { eventCount: 2 }, imprecise: { eventCount: 1 }, exactDay: { eventCount: 1 } } });
+    expect(result.completed.assessment.applicationIds).toEqual([a]);
+    expect(result.eventsInPeriod.eventIds).toEqual([known]);
+  } finally { result = original; }
+});
+
+it('withholds stale occurrence membership after a company edit and explains the recalculated bucket', async () => {
+  const admin = await connectTestDatabase();
+  const company = 'Fictional exact coverage filter';
+  const opportunity = randomUUID(), application = randomUUID();
+  const readMetrics = () => fixture.request(`/api/v1/analytics?${new URLSearchParams({ query: JSON.stringify({ ...query, filters: { company: [company] } }) })}`, { headers: fixture.headers });
+  const explainUnknown = (data: Record<string, unknown>) => {
+    const keys = data.occurrenceDateDrilldown as { unknown: string } | undefined;
+    return fixture.request(`/api/v1/applications?${new URLSearchParams({
+      query: JSON.stringify(data.query),
+      explain: JSON.stringify({ kind: 'occurrenceDateCoverage', bucket: 'unknown', selectionKey: keys?.unknown }),
+    })}`, { headers: fixture.headers });
+  };
+  try {
+    await admin.query('INSERT INTO career.opportunities(id,owner_id,company) VALUES($1,$2,$3)', [opportunity, fixture.owner, company]);
+    await admin.query("INSERT INTO career.applications(id,owner_id,opportunity_id,display_id,submission_status) VALUES($1,$2,$3,'N999995','confirmado')", [application, fixture.owner, opportunity]);
+    await admin.query("INSERT INTO career.events(owner_id,application_id,kind,state) VALUES($1,$2,'avaliacao','concluido')", [fixture.owner, application]);
+    const initial = await readMetrics();
+    expect(initial.status).toBe(200);
+    expect(initial.json.occurrenceDateCoverage.buckets.unknown.applicationIds).toEqual([application]);
+    const initialList = await explainUnknown(initial.json);
+    expect(initialList.status).toBe(200);
+    expect(initialList.json.items.map((row: { id: string }) => row.id)).toEqual([application]);
+
+    await admin.query('UPDATE career.opportunities SET company=$1 WHERE id=$2', ['Fictional edited company', opportunity]);
+    const stale = await explainUnknown(initial.json);
+    expect(stale.status).toBe(409);
+    expect(stale.json.error.code).toBe('ANALYTICS_SELECTION_STALE');
+    expect(stale.json.items).toBeUndefined();
+
+    const fresh = await readMetrics();
+    expect(fresh.status).toBe(200);
+    expect(fresh.json.query.filters).toEqual(initial.json.query.filters);
+    expect(fresh.json.asOf).not.toBe(initial.json.asOf);
+    expect(fresh.json.occurrenceDateDrilldown.unknown).toMatch(/^[0-9a-f]{64}$/);
+    expect(fresh.json.occurrenceDateCoverage.buckets.unknown).toEqual({ eventCount: 0, applicationIds: [] });
+    const freshList = await explainUnknown(fresh.json);
+    expect(freshList.status).toBe(200);
+    expect(freshList.json).toMatchObject({ items: [], total: 0 });
+  } finally { await admin.end(); }
 });
 
 it('explains exact group keys above 200 characters and rejects above the domain maximum', async () => {

@@ -6,11 +6,13 @@ import {
   analyticsQuerySchema,
   MAX_ANALYTICS_DAYS,
   MAX_ANALYTICS_ENTRIES,
+  occurrenceDateBuckets,
   type AnalyticsResult,
+  type OccurrenceDateBucket,
 } from '../../shared/analytics.js';
-import { instantSchema, localDaySchema, shortTextSchema, uuidSchema } from '../../shared/model.js';
+import { instantSchema, localDaySchema, sha256Schema, shortTextSchema, uuidSchema } from '../../shared/model.js';
 import { buildAnalytics } from '../../domain/metrics.js';
-import { buildReviewSnapshot } from '../../domain/cycles.js';
+import { buildReviewSnapshot, laterReviewEvents, REVIEW_CALCULATION_VERSION } from '../../domain/cycles.js';
 import { reviewMarkdown } from '../../domain/review-markdown.js';
 import { civilDaysBetween, toLocalDay } from '../../domain/dates.js';
 import { snapshotCsv, transferHash } from '../../domain/export.js';
@@ -149,12 +151,17 @@ const explanationSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('coverage'), collection: z.enum(['precision', 'certainty', 'missing']), key: z.string() }).refine(
     ({ collection, key }) => ({ precision: ['unknown', 'day', 'month', 'year', 'instant'], certainty: ['unknown', 'exact', 'approximate'], missing: ['submittedDay', 'sentCv'] })[collection].includes(key),
   ),
+  z.strictObject({ kind: z.literal('occurrenceDateCoverage'), bucket: z.enum(occurrenceDateBuckets), selectionKey: sha256Schema.optional() }),
   z.strictObject({
     kind: z.literal('series'),
     collection: z.enum(['daily', 'weekly']),
     day: localDaySchema,
   }),
 ]);
+function occurrenceSelectionKey(result: AnalyticsResult, bucket: OccurrenceDateBucket) {
+  const { denominator, buckets } = result.occurrenceDateCoverage;
+  return transferHash({ query: result.query, bucket, denominator, selection: buckets[bucket] });
+}
 function explainingIds(result: AnalyticsResult, raw: unknown) {
   const selection = parse(explanationSchema, raw);
   if (selection.kind === 'population') return result.populations[selection.name].applicationIds;
@@ -167,6 +174,10 @@ function explainingIds(result: AnalyticsResult, raw: unknown) {
     return result.firstReturn.distribution.find((point) => point.days === selection.days)?.applicationIds ?? [];
   if (selection.kind === 'firstReturnExclusion') return result.firstReturn.exclusions[selection.reason]!.applicationIds;
   if (selection.kind === 'coverage') return result.coverage[selection.collection][selection.key]?.applicationIds ?? [];
+  if (selection.kind === 'occurrenceDateCoverage') {
+    if (selection.selectionKey !== occurrenceSelectionKey(result, selection.bucket)) throw new SafeError('ANALYTICS_SELECTION_STALE');
+    return result.occurrenceDateCoverage.buckets[selection.bucket].applicationIds;
+  }
   if (selection.kind === 'series')
     return (
       result[selection.collection].find((point) => point.day === selection.day)?.applicationIds ??
@@ -389,6 +400,7 @@ export async function readRoute(
           status: 200,
           body: {
             ...result,
+            occurrenceDateDrilldown: Object.fromEntries(occurrenceDateBuckets.map((bucket) => [bucket, occurrenceSelectionKey(result, bucket)])),
             filters: result.query.filters ?? {},
             population_label: result.populations.selected.label,
             metrics: result.conversions,
@@ -573,6 +585,12 @@ export async function readRoute(
         if (!version) throw new SafeError('NOT_FOUND');
         if (format === 'markdown') return { status: 200, body: reviewMarkdown(version), contentType: 'text/markdown; charset=utf-8' };
         const live = await loadReviewProjection(tx, actor.ownerId, version.batchId);
+        const external = new Set<string>(version.snapshot.externalResultEventIds ?? []);
+        const externalResults = live.events.filter((event) => external.has(event.id));
+        if (version.calculationVersion === REVIEW_CALCULATION_VERSION) {
+          const laterResults = laterReviewEvents(live.rows, live.events, live.asOf, version.snapshot);
+          return { status: 200, body: { version, externalResults, laterResults } };
+        }
         const captured = new Set(version.eventIds);
         const canonical = canonicalAttribution(live.rows);
         // Comparação viva em ambas as direções; os IDs congelados não são alterados.
@@ -582,7 +600,7 @@ export async function readRoute(
           status: 200,
           body: {
             version,
-            externalResults: live.events.filter((event) => (version.snapshot.externalResultEventIds ?? []).includes(event.id)),
+            externalResults,
             laterResults: live.events
               .map((event) => ({
                 ...event,

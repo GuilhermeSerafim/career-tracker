@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { commandSchema } from '../../shared/commands';
-import { MAX_SOURCE_ARCHIVE_BYTES, reviewSnapshotSchema, transferEntitySchema } from '../../shared/transfer';
-import { unknownDate } from '../fixtures/career';
+import { buildReviewSnapshot } from '../../domain/cycles';
+import { buildSnapshot, TransferError } from '../../domain/export';
+import type { AnalyticsEvent, AnalyticsRow } from '../../shared/analytics';
+import { MAX_SOURCE_ARCHIVE_BYTES, reviewSnapshotSchema, transferEntitySchema, type TransferEntity } from '../../shared/transfer';
+import { appFixture, unknownDate } from '../fixtures/career';
 
 const id = '00000000-0000-4000-8000-000000000101';
 const instant = '2026-11-15T12:00:00Z';
@@ -135,5 +138,111 @@ describe('transferência das correções de candidatura', () => {
       ...(['resume_ref', 'evidence'] as const).map((entityType) => ({ table: 'creation_requests', data: { id, createdAt, clientId: id, payloadHash: 'a'.repeat(64), entityType, resultApplicationId: null, resultContactId: null, resultTaskId: null, resultEventId: null, resultResumeId: entityType === 'resume_ref' ? id : null, resultEvidenceId: entityType === 'evidence' ? id : null } })),
     ];
     for (const row of records) expect(transferEntitySchema.parse({ formatVersion: 1, ...row })).toEqual({ formatVersion: 1, ...row });
+  });
+});
+
+type ReviewRow = Extract<TransferEntity, { table: 'review_versions' }>;
+function frozenReviewTransfer() {
+  const identifier = (sequence: number) => `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`;
+  const [owner, opportunityId, cycleId, batchId, reviewId] = [1, 2, 3, 4, 5].map(identifier) as [string, string, string, string, string];
+  const application = (n: number, cycleOrder: number | null, canonicalApplicationId: string | null = null): AnalyticsRow => ({
+    ...appFixture({ id: identifier(n), displayId: `N00000${n}`, cycleOrder, countingEligible: !canonicalApplicationId, canonicalApplicationId }),
+    company: null, title: null, seniority: null, modality: null, batchIds: canonicalApplicationId ? [] : [batchId],
+  });
+  const member = application(6, 7), second = application(7, 6), alias = application(8, null, member.id);
+  const assessment: AnalyticsEvent = {
+    id: identifier(21), applicationId: alias.id, kind: 'avaliacao', state: 'concluido',
+    recordedAt: '2026-11-15T11:30:00.123456Z', occurredDate: { precision: 'instant', certainty: 'exact', value: '2026-11-14T15:00:00.123456Z' },
+    resultText: ' Desempenho original.\r\n', scoreValue: 80, scoreUnit: ' pontos ', sourceText: null, supersedesEventId: null,
+  };
+  const independent: AnalyticsEvent = { ...assessment, id: identifier(22), occurredDate: unknownDate };
+  const correction: AnalyticsEvent = {
+    ...assessment, id: identifier(23), kind: 'nota', state: 'informado', occurredDate: unknownDate,
+    resultText: 'Evidência corrigida.', scoreValue: null, scoreUnit: null, sourceText: ' Texto original. ', supersedesEventId: assessment.id,
+  };
+  const physicalEvents = [assessment, independent, correction];
+  const populationIds = [second.id, member.id];
+  const snapshot = reviewSnapshotSchema.parse(buildReviewSnapshot([member, second, alias], physicalEvents, populationIds, instant));
+  const review: ReviewRow = {
+    formatVersion: 1, table: 'review_versions', data: { ...base, id: reviewId, batchId, versionNumber: 1, type: 'original',
+      snapshot, populationIds, eventIds: snapshot.eventIds, calculationVersion: 'metrics-v1/review-v2', closedAt: instant,
+      narrative: null, decisions: [], predecessorId: null, reason: null, evidenceId: null, originalMarkdown: null, importProvenance: null },
+  };
+  const entities: TransferEntity[] = [
+    { formatVersion: 1, table: 'opportunities', data: { ...base, id: opportunityId, company: null, title: null, kind: 'vaga', platform: null, tenant: null, jobCode: null, jobKey: null, seniority: null, modality: null, description: null, stack: [] } },
+    { formatVersion: 1, table: 'cycles', data: { ...base, id: cycleId, resetDate: unknownDate, resetMarker: null, nextOrder: 8, isCurrent: true } },
+    { formatVersion: 1, table: 'batches', data: { ...base, id: batchId, cycleId, batchNumber: 1, status: 'closed', target: 2, rectificationPending: false } },
+    ...[second, member].map((row, index): TransferEntity => ({
+      formatVersion: 1, table: 'batch_members', data: { ...base, id: identifier(31 + index), batchId, applicationId: row.id, capturedOrder: row.cycleOrder!, allocation: 'counted', eligible: true },
+    })),
+    ...[member, second, alias].map((row): TransferEntity => ({
+      formatVersion: 1, table: 'applications', data: { ...base, id: row.id, displayId: row.displayId, opportunityId, legacyId: null,
+        track: null, applicationInstance: `fictícia-${row.displayId}`, submissionStatus: row.submissionStatus, submittedDate: row.submittedDate,
+        stage: row.stage, discoveryChannel: null, submissionPlatform: null, notes: null, cycleRelation: row.cycleRelation, cycleOrder: row.cycleOrder,
+        countingEligible: row.countingEligible, archivedAt: null, canonicalApplicationId: row.canonicalApplicationId, legacyRegisteredDate: unknownDate, legacyResumeText: null },
+    })),
+    ...physicalEvents.map(({ recordedAt, ...event }): TransferEntity => ({
+      formatVersion: 1, table: 'events', data: { ...base, ...event, createdAt: recordedAt, evidenceId: null },
+    })),
+    review,
+  ];
+  return { review, assessment, correction, independent, alias, rebuild: () => buildSnapshot(owner, entities, instant) };
+}
+
+describe('coerência das projeções nativas de revisão v2', () => {
+  it('preserva a ordem capturada e o alias físico de uma correção, com instantes equivalentes', () => {
+    const { review, rebuild, assessment, correction, alias } = frozenReviewTransfer();
+    const frozen = review.data.snapshot.events!.find((event) => event.id === assessment.id)!;
+    frozen.recordedAt = '2026-11-15T08:30:00.123456-03:00';
+    frozen.occurredDate = { precision: 'instant', certainty: 'exact', value: '2026-11-14T12:00:00.123456-03:00' };
+    const retained = rebuild().entities.find((row) => row.table === 'review_versions');
+    expect(retained).toEqual(review);
+    expect(review.data.populationIds).toEqual([...review.data.snapshot.populationIds].reverse());
+    expect(review.data.snapshot.events).toContainEqual(expect.objectContaining({ id: correction.id, applicationId: alias.id, supersedesEventId: assessment.id }));
+    expect(frozen).toMatchObject({ resultText: ' Desempenho original.\r\n', scoreUnit: ' pontos ', sourceText: null });
+  });
+
+  it.each([
+    ['registros internos ausentes', (review: ReviewRow['data']) => { review.snapshot.populationIds = []; }],
+    ['registros internos duplicados', (review: ReviewRow['data']) => { review.snapshot.populationIds.push(review.snapshot.populationIds[0]!); }],
+    ['registros externos duplicados', (review: ReviewRow['data']) => { review.populationIds.push(review.populationIds[0]!); }],
+    ['declaração externa rebaixada e histórico ausente', (review: ReviewRow['data']) => {
+      review.calculationVersion = 'metrics-v1/review-v1';
+      delete review.snapshot.externalEventHistoryIds;
+    }],
+  ] as const)('recusa transferência reconstituída com %s', (_label, change) => {
+    const { review, rebuild } = frozenReviewTransfer();
+    change(review.data);
+    expect(rebuild).toThrow(TransferError);
+  });
+
+  it.each([
+    ['classificação e estado divergentes', (event: AnalyticsEvent) => { event.kind = 'nota'; event.state = 'informado'; }],
+    ['data de ocorrência divergente', (event: AnalyticsEvent) => { event.occurredDate = unknownDate; }],
+    ['certeza da data divergente', (event: AnalyticsEvent) => { event.occurredDate = { precision: 'instant', certainty: 'approximate', value: '2026-11-14T15:00:00.123456Z' }; }],
+    ['texto ajustado', (event: AnalyticsEvent) => { event.resultText = event.resultText!.trim(); }],
+    ['pontuação divergente', (event: AnalyticsEvent) => { event.scoreValue = 81; }],
+    ['unidade ajustada', (event: AnalyticsEvent) => { event.scoreUnit = event.scoreUnit!.trim(); }],
+    ['texto vazio em lugar de nulo', (event: AnalyticsEvent) => { event.sourceText = ''; }],
+  ] as const)('recusa evento congelado com %s', (_label, change) => {
+    const { review, assessment, rebuild } = frozenReviewTransfer();
+    change(review.data.snapshot.events!.find((event) => event.id === assessment.id)!);
+    expect(rebuild).toThrow(TransferError);
+  });
+
+  it.each([true, false])('recusa aresta de correção removida ou redirecionada (%s)', (remove) => {
+    const { review, correction, independent, rebuild } = frozenReviewTransfer();
+    review.data.snapshot.events!.find((event) => event.id === correction.id)!.supersedesEventId = remove ? null : independent.id;
+    expect(rebuild).toThrow(TransferError);
+  });
+
+  it.each(['metrics-v1/review-v1', null])('aceita declaração histórica %s e preserva o Markdown', (version) => {
+    const { review, rebuild } = frozenReviewTransfer();
+    review.data.calculationVersion = version;
+    review.data.eventIds = [];
+    review.data.snapshot = { schemaVersion: 1, asOf: instant, period: null, populationIds: review.data.populationIds, eventIds: [], metrics: {},
+      ...(version ? { calculationVersion: version } : {}) };
+    review.data.originalMarkdown = version ? null : '# Revisão original\r\n  Texto histórico.\r\n';
+    expect(rebuild().entities.find((row) => row.table === 'review_versions')).toEqual(review);
   });
 });

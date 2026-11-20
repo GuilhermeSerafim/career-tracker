@@ -4,7 +4,7 @@ import type { Command } from '../../shared/commands';
 import type { AuthController } from './auth';
 
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly requestId?: string, readonly details?: { currentVersion: number; changedFields: string[] }) {
+  constructor(readonly status: number, readonly requestId?: string, readonly details?: { currentVersion: number; changedFields: string[] }, readonly code?: 'ANALYTICS_SELECTION_STALE') {
     super(status === 401 ? 'Sua sessão expirou. Entre novamente para continuar.' : status === 403 ? 'Acesso não autorizado.' :
       status === 409 ? 'O registro foi alterado. Releia a versão atual e escolha as alterações.' : status === 503 ? 'Serviço indisponível. Sua edição foi mantida; tente novamente.' :
         status === 0 ? 'Esta operação foi encerrada.' : 'Não foi possível concluir a solicitação. Sua edição foi mantida.');
@@ -43,7 +43,8 @@ export function createApiClient(auth: AuthController, transport: typeof fetch = 
         ? { currentVersion: details.currentVersion as number, changedFields: details.changedFields as string[] } : undefined;
       // A late 401 from an older token must not expire a refreshed session.
       if (response.status === 401 && auth.getSnapshot().session?.access_token === identity.session.access_token) auth.expire();
-      throw new ApiError(response.status, requestId, conflict);
+      const code = response.status === 409 && safe.code === 'ANALYTICS_SELECTION_STALE' ? safe.code : undefined;
+      throw new ApiError(response.status, requestId, conflict, code);
     }
     return data as T;
   };

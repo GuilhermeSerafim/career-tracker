@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { LEGACY_HEADER, parseLegacyCsv } from './import.js';
-import { toLocalDay } from './dates.js';
+import { instantNanoseconds, toLocalDay } from './dates.js';
+import { isExternalReviewResult, REVIEW_CALCULATION_VERSION } from './cycles.js';
+import { canonicalAttribution, eventHistory } from './metrics.js';
+import type { AnalyticsEvent } from '../shared/analytics.js';
 import { MAX_DISPLAY_NUMBER, transferDataKeys, transferEntitySchema, transferManifestSchema, transferTableSchema, type TransferContinuity, type TransferEntity, type TransferManifest } from '../shared/transfer.js';
 export const TRANSFER_TABLES = transferTableSchema.options;
 export type TransferTable = typeof TRANSFER_TABLES[number];
@@ -91,6 +94,64 @@ export const TRANSFER_REFERENCES: Partial<Record<TransferTable, Record<string, T
     opportunity_identities: { opportunityId: 'opportunities', verificationEvidenceId: 'evidence' },
     creation_requests: { resultApplicationId: 'applications', resultContactId: 'contacts', resultTaskId: 'tasks', resultEventId: 'events', resultResumeId: 'resume_refs', resultEvidenceId: 'evidence', resultCycleId: 'cycles' },
 };
+function matchesIds(ids: string[], expected: ReadonlySet<string>): boolean {
+    return ids.length === expected.size && new Set(ids).size === expected.size && ids.every((id) => expected.has(id));
+}
+
+function matchesFrozenEvent(frozen: AnalyticsEvent, physical: Extract<TransferEntity, { table: 'events' }>['data']): boolean {
+    const occurrence = frozen.occurredDate;
+    const originalOccurrence = physical.occurredDate;
+    const sameOccurrence = occurrence.precision === 'instant' && originalOccurrence.precision === 'instant'
+        ? occurrence.certainty === originalOccurrence.certainty && instantNanoseconds(occurrence.value) === instantNanoseconds(originalOccurrence.value)
+        : canonicalJson(occurrence) === canonicalJson(originalOccurrence);
+    return frozen.id === physical.id && frozen.applicationId === physical.applicationId &&
+        frozen.kind === physical.kind && frozen.state === physical.state && frozen.supersedesEventId === physical.supersedesEventId &&
+        frozen.resultText === physical.resultText && frozen.sourceText === physical.sourceText &&
+        frozen.scoreValue === physical.scoreValue && frozen.scoreUnit === physical.scoreUnit && sameOccurrence &&
+        instantNanoseconds(frozen.recordedAt) === instantNanoseconds(physical.createdAt);
+}
+
+function validateReviewEventProjection(review: Extract<TransferEntity, { table: 'review_versions' }>['data'],
+    index: ReadonlyMap<string, TransferEntity>): void {
+    const { snapshot } = review;
+    if (review.calculationVersion !== REVIEW_CALCULATION_VERSION && snapshot.calculationVersion !== REVIEW_CALCULATION_VERSION) return;
+    const { applications, relatedCanonicalApplications, events, externalEventHistoryIds, externalResultApplicationIds, externalResultEventIds } = snapshot;
+    if (review.calculationVersion !== snapshot.calculationVersion || !applications || !relatedCanonicalApplications ||
+        !events || !externalEventHistoryIds || !externalResultApplicationIds || !externalResultEventIds) throw new TransferError();
+    const members = new Set(applications.map((row) => row.id));
+    const rows = [...applications, ...relatedCanonicalApplications];
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    if (byId.size !== rows.length || !matchesIds(review.populationIds, members) || !matchesIds(snapshot.populationIds, members) ||
+        rows.some((row) => !index.has('applications/' + row.id))) throw new TransferError();
+    // A identidade no fechamento vem das linhas congeladas, inclusive os caminhos dos aliases.
+    const canonical = canonicalAttribution(rows);
+    const memberRoots = new Set(review.populationIds.map(canonical));
+    const eventIds = new Set(events.map((event) => event.id));
+    const { known } = eventHistory(events, canonical, snapshot.asOf);
+    if (eventIds.size !== events.length || known.length !== events.length ||
+        !matchesIds(review.eventIds, eventIds) || !matchesIds(snapshot.eventIds, eventIds)) throw new TransferError();
+    for (const event of events) {
+        const physical = index.get('events/' + event.id);
+        if (physical?.table !== 'events' || !matchesFrozenEvent(event, physical.data) ||
+            !memberRoots.has(canonical(event.applicationId))) throw new TransferError();
+    }
+    if (new Set(externalEventHistoryIds).size !== externalEventHistoryIds.length) throw new TransferError();
+    const externalHistory = externalEventHistoryIds.map((id) => {
+        const physical = index.get('events/' + id);
+        if (physical?.table !== 'events' || eventIds.has(id)) throw new TransferError();
+        const { applicationId, kind, supersedesEventId, createdAt: recordedAt } = physical.data;
+        const root = canonical(applicationId);
+        if (memberRoots.has(root) || byId.get(root)?.cycleRelation !== 'before_reset') throw new TransferError();
+        return { id, applicationId, kind, supersedesEventId, recordedAt };
+    });
+    // Eventos da transferência que não estavam visíveis no fechamento não interpretam esta versão.
+    const external = eventHistory(externalHistory, canonical, snapshot.asOf);
+    const results = external.known.filter((event) => !external.superseded.has(event.id) && isExternalReviewResult(event));
+    if (external.known.length !== externalHistory.length ||
+        !matchesIds(externalResultEventIds, new Set(results.map((event) => event.id))) ||
+        !matchesIds(externalResultApplicationIds, new Set(results.map((event) => canonical(event.applicationId))))) throw new TransferError();
+}
+
 export function validateReferences(entities: TransferEntity[], capturedFloor?: string): void {
     const index = new Map(entities.map((row) => [row.table + '/' + row.data.id, row]));
     if (index.size !== entities.length)
@@ -169,6 +230,7 @@ export function validateReferences(entities: TransferEntity[], capturedFloor?: s
                 throw new TransferError();
         }
         if (row.table === 'review_versions') {
+            validateReviewEventProjection(row.data, index);
             for (const id of [...row.data.populationIds, ...row.data.snapshot.populationIds])
                 if (!index.has('applications/' + id))
                     throw new TransferError();

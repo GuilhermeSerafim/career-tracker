@@ -262,7 +262,8 @@ function importUnitAudit(imported: ImportRow, data: ExportIndex) {
   if (inserts.length !== 1 || first.actor.kind !== 'import' || first.source !== run?.importerVersion || first.beforeData !== null ||
     after?.id !== imported.id || after.source_file_id !== imported.sourceFileId || after.row_hash !== imported.rowHash ||
     after.target_application_id !== imported.targetApplicationId || after.applied_target_version !== imported.appliedTargetVersion ||
-    after.result !== imported.result || !equal(after.resolution, imported.resolution)) return { valid: false, request: [] as Audit[] };
+    after.result !== imported.result || !equal(after.resolution, imported.resolution) ||
+    !equal(after.unit_result, imported.unitResult)) return { valid: false, request: [] as Audit[] };
   return { valid: true, request: (data.auditByRequest.get(first.requestId) ?? []).filter((entry) => sameRequest(first, entry)) };
 }
 

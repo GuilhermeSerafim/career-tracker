@@ -444,11 +444,13 @@ test('gráfico abre registros: barra e tabela preservam IDs, cobertura, paginaç
   await syntheticBrowser(page, api); await page.emulateMedia({ reducedMotion: 'reduce' });
   const ids: string[] = [];
   for (let index = 0; index < 27; index++) {
-    const response = await api.post({ operation: 'save_application', clientId: crypto.randomUUID(), data: { opportunity: { company: `Análise fictícia ${index}`, title: 'Engenharia fictícia', kind: 'vaga', platform: null, tenant: null, jobCode: null, jobKey: null, seniority: null, modality: null, description: null, stack: ['React', '<img src=x onerror=alert(1)>'], identities: [] }, track: null, applicationInstance: 'initial', submissionStatus: 'confirmado', submittedDate: index === 26 ? { precision: 'unknown', value: null } : { precision: 'day', certainty: 'exact', value: '2026-11-15' }, stage: 'candidatura_enviada', cycleRelation: 'unknown', discoveryChannel: index < 25 ? 'Canal fictício' : index === 25 ? 'canal_desconhecido' : null, submissionPlatform: null, notes: null, resumeIds: [], links: [] }, evidence: { clientId: crypto.randomUUID(), kind: 'relato_usuario', originalText: 'Relato ficticio de envio confirmado.', source: null, occurredDate: null, privateRef: null, localRef: null } });
+    const response = await api.post({ operation: 'save_application', clientId: crypto.randomUUID(), data: { opportunity: { company: `Análise fictícia ${index}`, title: 'Engenharia fictícia', kind: 'vaga', platform: null, tenant: null, jobCode: null, jobKey: null, seniority: null, modality: null, description: null, stack: ['React', '<img src=x onerror=alert(1)>'], identities: [] }, track: null, applicationInstance: 'initial', submissionStatus: 'confirmado', submittedDate: index === 26 ? { precision: 'unknown', value: null } : { precision: 'day', certainty: 'exact', value: '2026-11-15' }, stage: 'desconhecida', cycleRelation: 'unknown', discoveryChannel: index < 25 ? 'Canal fictício' : index === 25 ? 'canal_desconhecido' : null, submissionPlatform: null, notes: null, resumeIds: [], links: [] }, evidence: { clientId: crypto.randomUUID(), kind: 'relato_usuario', originalText: 'Relato ficticio de envio confirmado.', source: null, occurredDate: null, privateRef: null, localRef: null } });
     expect(response.status).toBe(201); ids.push(response.json.application.id);
   }
   const returned = await api.post({ operation: 'record_event', clientId: crypto.randomUUID(), application: { id: ids[0], expectedVersion: 1 }, data: { kind: 'retorno_substantivo', state: 'informado', occurredDate: { precision: 'day', certainty: 'exact', value: '2026-11-16' }, resultText: 'Retorno inteiramente fictício.', scoreValue: null, scoreUnit: null, sourceText: null, evidence: null } });
   expect(returned.status).toBe(201);
+  const undated = await api.post({ operation: 'record_event', clientId: crypto.randomUUID(), application: { id: ids[26], expectedVersion: 1 }, data: { kind: 'avaliacao', state: 'concluido', occurredDate: { precision: 'unknown', value: null }, resultText: 'Avaliação fictícia sem data.', scoreValue: null, scoreUnit: null, sourceText: null, evidence: null } });
+  expect(undated.status).toBe(201);
   await page.goto('/'); await expect(page.getByRole('heading', { name: 'Seu próximo passo.' })).toBeVisible();
   expect(requested.some((path) => /Chart-|AnalyticsPage-/.test(path))).toBe(false);
   const analyticsResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/analytics' && response.status() === 200);
@@ -491,6 +493,12 @@ test('gráfico abre registros: barra e tabela preservam IDs, cobertura, paginaç
   await page.goBack(); await expect(channel).toBeVisible();
   await expect(page.getByRole('region', { name: 'Currículo efetivamente enviado', exact: true })).toContainText('Sem CV enviado informado');
   await expect(page.getByRole('region', { name: 'Cobertura dos dados' })).toContainText('Sem dia exato de envio');
+  const occurrence = page.getByRole('region', { name: 'Data de ocorrência dos eventos' });
+  const unknownOccurrence = occurrence.getByRole('row', { name: /^Data de ocorrência desconhecida/ });
+  await expect(unknownOccurrence.getByRole('cell', { name: '2 / 29 eventos' })).toBeVisible();
+  await unknownOccurrence.getByRole('button', { name: 'Ver candidaturas: Data de ocorrência desconhecida' }).click();
+  await expect(page.locator('.application-table-region tbody a')).toHaveAttribute('href', `/vagas/${ids[26]}`);
+  await page.goBack(); await expect(channel).toBeVisible();
   await expect(page.getByRole('region', { name: 'Stack informada', exact: true })).toContainText('<img src=x onerror=alert(1)>');
   expect(await page.locator('.analytics-content img').count()).toBe(0);
   const artifacts = process.env.CAREER_E2E_ARTIFACT_DIR ?? testInfo.outputDir; await mkdir(artifacts, { recursive: true });
@@ -503,6 +511,20 @@ test('gráfico abre registros: barra e tabela preservam IDs, cobertura, paginaç
     await page.screenshot({ path: join(artifacts, `task18-${width}.png`) });
     await channel.screenshot({ path: join(artifacts, `task18-channel-${width}.png`) });
   }
+  const source = (await api.request(`/api/v1/applications/${ids[26]}`, { headers: api.headers })).json.application;
+  const merged = await api.post({
+    operation: 'resolve_duplicate', application: { id: source.id, expectedVersion: source.version },
+    canonicalApplication: { id: ids[25], expectedVersion: 1 }, affectedBatches: [],
+    reason: 'Integração fictícia de duplicata.', evidence: { clientId: crypto.randomUUID(), kind: 'relato_usuario', originalText: 'Identidade fictícia confirmada.', source: null, occurredDate: null, privateRef: null, localRef: null },
+  });
+  expect(merged.status).toBe(200);
+  await unknownOccurrence.getByRole('button', { name: 'Ver candidaturas: Data de ocorrência desconhecida' }).click();
+  await expect(page.getByRole('alert')).toContainText('A lista mudou desde o cálculo desta análise.');
+  await expect(page.locator('.application-table-region')).toHaveCount(0);
+  await page.getByRole('link', { name: 'Recalcular análise' }).click();
+  await expect(unknownOccurrence.getByRole('cell', { name: '3 / 30 eventos' })).toBeVisible();
+  await unknownOccurrence.getByRole('button', { name: 'Ver candidaturas: Data de ocorrência desconhecida' }).click();
+  await expect(page.locator('.application-table-region tbody a')).toHaveAttribute('href', `/vagas/${ids[25]}`);
   expect(requested.some((path) => /Chart-/.test(path))).toBe(true); expect(errors).toEqual([]);
 });
 

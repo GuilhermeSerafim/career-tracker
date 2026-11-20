@@ -9,7 +9,13 @@ import type { Application, ApplicationPage } from './application-data';
 import { displayDate } from '../today/today-data';
 import type { Stage } from '../../../shared/model';
 import { ConflictDialog } from '../../components/ConflictDialog';
+import { ApiError } from '../../lib/api';
 import './applications.css';
+
+function isOccurrenceSelection(raw: string | null): boolean {
+  try { return JSON.parse(raw ?? 'null')?.kind === 'occurrenceDateCoverage'; }
+  catch { return false; }
+}
 
 export function ListPage({ runtime }: { runtime: AppRuntime }) {
   const [params] = useSearchParams();
@@ -26,10 +32,14 @@ export function ListPage({ runtime }: { runtime: AppRuntime }) {
   if (cursor) query.set('cursor', cursor);
   const url = `/api/v1/applications?${query}`;
   const data = useQuery({ queryKey: ['applications', url, runtime.auth.getSnapshot().generation, runtime.getAccessPeriod()], queryFn: () => runtime.api.read<ApplicationPage>(url) });
+  const checkingOccurrence = isOccurrenceSelection(params.get('explain')) && data.isFetching;
+  const staleOccurrence = data.error instanceof ApiError && data.error.code === 'ANALYTICS_SELECTION_STALE';
+  const analyticsQuery = params.get('query');
+  const recalculation = analyticsQuery ? `/analises?${new URLSearchParams({ recalcular: analyticsQuery })}` : '/analises';
   return <><section className="page-intro application-heading"><div><p className="eyebrow">Sua busca, organizada</p><h1 tabIndex={-1}>Vagas</h1><p>Envios, oportunidades e o próximo passo.</p></div><Link className="application-primary" to="/vagas/nova">Registrar candidatura ↗</Link></section>
     {drilldown ? <p className="application-notice">Seleção da análise: população preservada, incluindo registros arquivados. <Link to="/vagas">Abrir lista geral</Link></p> : <Filters value={filters} onApply={(value) => { setFilters(value); setPagination({ population, cursor: null, previous: [] }); }} />}
-    <div className="application-toolbar"><div aria-label="Formato da lista"><button aria-pressed={!board} onClick={() => setBoard(false)}>Tabela</button><button aria-pressed={board} onClick={() => setBoard(true)}>Quadro</button></div>{data.isSuccess && <p role="status">{data.data.total} registro(s) no filtro · {data.data.items.length} nesta página</p>}</div>
-    {data.isPending ? <p role="status">Carregando candidaturas…</p> : data.isError ? <><p role="alert">Não foi possível carregar as candidaturas.</p><button onClick={() => { void data.refetch(); }}>Tentar novamente</button></> : <>
+    <div className="application-toolbar"><div aria-label="Formato da lista"><button aria-pressed={!board} onClick={() => setBoard(false)}>Tabela</button><button aria-pressed={board} onClick={() => setBoard(true)}>Quadro</button></div>{data.isSuccess && !checkingOccurrence && <p role="status">{data.data.total} registro(s) no filtro · {data.data.items.length} nesta página</p>}</div>
+    {data.isPending || checkingOccurrence ? <p role="status">Carregando candidaturas…</p> : staleOccurrence ? <><p role="alert">A lista mudou desde o cálculo desta análise.</p><Link className="text-action" to={recalculation}>Recalcular análise</Link></> : data.isError ? <><p role="alert">Não foi possível carregar as candidaturas.</p><button onClick={() => { void data.refetch(); }}>Tentar novamente</button></> : <>
       {!data.data.items.length ? <p>Nenhum registro neste filtro. Ajuste os filtros ou registre uma candidatura.</p> : board ? <section className="application-board" aria-label="Quadro por etapa">{Object.entries(stages).map(([stage, label]) => <section key={stage} className="board-column"><h2>{label} <small>{data.data.items.filter((a) => a.stage === stage).length}</small></h2>{data.data.items.filter((a) => a.stage === stage).map((a) => <article key={`${a.id}:${a.version}`} className="application-card"><Card application={a} /><StageMove runtime={runtime} application={a} /></article>)}</section>)}</section> : <>
         <div className="application-table-region" role="region" aria-label="Tabela de candidaturas" tabIndex={0}><table><caption>Candidaturas</caption><thead><tr><th>Oportunidade</th><th>Trilha / tipo</th><th>Envio</th><th>Etapa</th><th>Canal / plataforma</th></tr></thead><tbody>{data.data.items.map((a) => <tr key={a.id}><td><Link to={`/vagas/${a.id}`}>{a.displayId} · {a.opportunity.company ?? 'Empresa não informada'}</Link><p>{a.opportunity.title ?? 'Cargo não informado'}</p>{a.archivedAt && <strong>Arquivada</strong>}</td><td>{a.track ?? 'Trilha não informada'}<p>{kindLabel(a)}</p></td><td>{statuses[a.submissionStatus]}<p>{displayDate(a.submittedDate, 'America/Sao_Paulo')}</p></td><td>{stages[a.stage]}</td><td>{a.discoveryChannel ?? 'Canal não informado'}<p>{a.submissionPlatform ?? 'Plataforma não informada'}</p></td></tr>)}</tbody></table></div>
         <div className="application-mobile-cards">{data.data.items.map((a) => <article className="application-card" key={a.id}><Card application={a} /></article>)}</div>

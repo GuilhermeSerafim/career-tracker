@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allocationEligible, batchState, nextStableOrder, buildReviewSnapshot } from '../../domain/cycles';
+import { allocationEligible, batchState, nextStableOrder, buildReviewSnapshot, laterReviewEvents } from '../../domain/cycles';
 import { reviewSnapshotSchema } from '../../shared/transfer';
 import type { AnalyticsRow, AnalyticsEvent } from '../../shared/analytics';
 import { commandSchema } from '../../shared/commands';
@@ -58,6 +58,17 @@ describe('alocação estável por membros válidos', () => {
     const alias = { ...root, id: '00000000-0000-4000-8000-000000000102', canonicalApplicationId: root.id, countingEligible: false };
     const event: AnalyticsEvent = { id: '00000000-0000-4000-8000-000000000201', applicationId: alias.id, kind: 'retorno_substantivo', state: 'informado', occurredDate: { precision: 'unknown', value: null }, recordedAt: '2026-11-16T12:00:00Z', supersedesEventId: null, resultText: null, scoreValue: null, scoreUnit: null, sourceText: null };
     expect(buildReviewSnapshot([alias, root], [event], [alias.id, root.id], event.recordedAt).metrics.response).toMatchObject({ numerator: 1, denominator: 1, applicationIds: [root.id] });
+  });
+  it('shows a member event committed after the projection even if its transaction timestamp is earlier', () => {
+    const member: AnalyticsRow = { ...appFixture(), company: null, title: null, seniority: null, modality: null, batchIds: [] };
+    const outside = { ...member, id: '00000000-0000-4000-8000-000000000102' };
+    const capturedAt = '2026-11-16T12:00:00.000002Z';
+    const snapshot = buildReviewSnapshot([member, outside], [], [member.id], capturedAt);
+    const memberEvent: AnalyticsEvent = { id: '00000000-0000-4000-8000-000000000201', applicationId: member.id, kind: 'entrevista', state: 'concluido', occurredDate: { precision: 'unknown', value: null }, recordedAt: '2026-11-16T12:00:00.000001Z', supersedesEventId: null, resultText: null, scoreValue: null, scoreUnit: null, sourceText: null };
+    const outsideEvent = { ...memberEvent, id: '00000000-0000-4000-8000-000000000202', applicationId: outside.id };
+    const liveRows = [member, { ...outside, canonicalApplicationId: member.id, countingEligible: false }];
+    expect(laterReviewEvents(liveRows, [memberEvent, outsideEvent], '2026-11-16T12:00:01Z', snapshot))
+      .toEqual([{ ...memberEvent, canonicalApplicationId: member.id }]);
   });
   it('transfere projeções históricas congeladas sem aparar rótulos ou unidades', () => {
     const row: AnalyticsRow = { ...appFixture(), stack: [' .NET '], company: null, title: null, seniority: null, modality: null, batchIds: [] };

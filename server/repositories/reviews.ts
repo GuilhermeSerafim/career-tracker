@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { batchState, nextStableOrder, allocationEligible } from '../../domain/cycles.js';
+import { batchState, nextStableOrder, allocationEligible, laterReviewEvents, REVIEW_CALCULATION_VERSION } from '../../domain/cycles.js';
 import type { MutationContext } from '../mutation';
 import { SafeError } from '../errors.js';
 import { applicationProjection } from './career.js';
@@ -32,6 +32,9 @@ export async function getReview(transaction: Transaction, owner: string, batch: 
   const version = (await transaction.query('SELECT * FROM career.review_versions WHERE owner_id=$1 AND batch_id=$2 AND ($3::integer IS NULL OR version_number=$3) ORDER BY version_number DESC LIMIT 1', [owner, batch, versionNumber])).rows[0];
   if (!version) throw new SafeError('NOT_FOUND');
   const live = await loadReviewProjection(transaction, owner, batch);
+  if (version.calculation_version === REVIEW_CALCULATION_VERSION) {
+    return { version, laterResults: laterReviewEvents(live.rows, live.events, live.asOf, version.snapshot) };
+  }
   const captured = new Set(version.event_ids as string[]);
   const population = new Set(version.population_ids as string[]);
   return { version, laterResults: live.events.filter((event) => population.has(event.applicationId) && !captured.has(event.id)) };

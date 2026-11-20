@@ -374,21 +374,22 @@ describe('candidaturas via login restrito em duas conexões', () => {
     expect((await application(command)).cycleOrder).toBe(1201);
     expect((await db.query('SELECT cycle_order FROM career.applications WHERE id=$1', [preserved.id])).rows[0].cycle_order).toBe('1200');
   });
-  it('preserva Markdown importado, proveniência e fechamento desconhecido em revisão textual', async () => {
+  it('preserva Markdown histórico, cálculo v1, proveniência e fechamento desconhecido em revisão textual', async () => {
     const fixture = await directFixture(); const app = fixture.members[0]; const originalId = randomUUID();
     const markdown = '# Revisão histórica\n\nTexto original, sem normalização.\n'; const provenance = { file: 'revisao-ficticia.md', row: 7 };
     await first.transaction(actor, async (tx) => {
       await tx.query('INSERT INTO career.batch_members(owner_id,batch_id,application_id,captured_order) VALUES($1,$2,$3,940000)', [owner, fixture.batch, app]);
       await tx.query('SELECT id FROM career.batches WHERE id=$1 FOR UPDATE', [fixture.batch]);
       const projection = await loadReviewProjection(tx, owner, fixture.batch);
-      const snapshot = buildReviewSnapshot(projection.rows, projection.events, projection.populationIds, projection.asOf);
-      await tx.query("INSERT INTO career.review_versions(id,owner_id,batch_id,version_number,type,snapshot,population_ids,event_ids,original_markdown,import_provenance) VALUES($1,$2,$3,1,'original',$4,$5,$6,$7,$8)", [originalId, owner, fixture.batch, snapshot, [app], snapshot.eventIds, markdown, provenance]);
+      const snapshot = { ...buildReviewSnapshot(projection.rows, projection.events, projection.populationIds, projection.asOf), calculationVersion: 'metrics-v1/review-v1' };
+      await tx.query("INSERT INTO career.review_versions(id,owner_id,batch_id,version_number,type,snapshot,population_ids,event_ids,original_markdown,import_provenance,calculation_version) VALUES($1,$2,$3,1,'original',$4,$5,$6,$7,$8,$9)", [originalId, owner, fixture.batch, snapshot, [app], snapshot.eventIds, markdown, provenance, snapshot.calculationVersion]);
       await tx.query("UPDATE career.batches SET status='closed' WHERE id=$1", [fixture.batch]);
     });
     const original = await latest(fixture.batch);
     await reviewCall({ operation: 'revise_review', batch: await batchRef(fixture.batch), predecessorId: originalId, type: 'revision', narrative: 'Novo comentário.', decisions: [], reason: 'Revisão de texto.', evidence: evidence() });
     const current = await latest(fixture.batch);
     expect(current.original_markdown).toBe(markdown); expect(current.import_provenance).toEqual(provenance); expect(current.closed_at).toBeNull();
+    expect(current.calculation_version).toBe('metrics-v1/review-v1');
     expect(current.snapshot).toEqual(original.snapshot);
     expect((await db.query('SELECT * FROM career.review_versions WHERE id=$1', [originalId])).rows[0]).toEqual(original);
   });

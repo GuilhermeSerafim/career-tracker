@@ -63,9 +63,12 @@ export const reviewSnapshotSchema = z.strictObject({
   populationIds: ids, eventIds: ids, metrics: historicalRecordSchema(metricSchema),
   calculationVersion: shortTextSchema.optional(), eligiblePopulationIds: ids.optional(),
   applications: z.array(historicalAnalyticsRowSchema).max(100_000).optional(), events: z.array(historicalAnalyticsEventSchema).max(100_000).optional(),
+  // A partir de review-v2, guarda também os caminhos canônicos dos eventos capturados.
   relatedCanonicalApplications: z.array(historicalAnalyticsRowSchema).max(100_000).optional(),
   eventEvidence: historicalJsonSchema.optional(), resumeRefs: historicalJsonSchema.optional(),
   coverage: historicalJsonSchema.optional(), distributions: historicalJsonSchema.optional(), completed: historicalJsonSchema.optional(), firstReturn: historicalJsonSchema.optional(),
+  // IDs fisicamente visíveis no corte da review-v2 para casos externos com histórico de resultados.
+  externalEventHistoryIds: ids.optional(),
   externalResultApplicationIds: ids.optional(), externalResultEventIds: ids.optional(),
 });
 function validSourceAudit(value: unknown, diff = false): boolean {

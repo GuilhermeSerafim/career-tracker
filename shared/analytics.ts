@@ -21,6 +21,8 @@ export type AnalyticsQuery = z.infer<typeof analyticsQuerySchema>;
 export const MAX_ANALYTICS_ENTRIES = 100_000;
 export const MAX_ANALYTICS_DAYS = 3660;
 export type ReachedCategory = 'response' | 'assessment' | 'interview' | 'offer';
+export const occurrenceDateBuckets = ['exactDay', 'imprecise', 'unknown'] as const;
+export type OccurrenceDateBucket = typeof occurrenceDateBuckets[number];
 export interface Population { label: string; applicationIds: string[]; count: number }
 export interface SeriesPoint extends Population { day: string; goal: number; difference: number }
 /** A identidade do grupo é a tupla (key, isMissing). Interfaces/gráficos devem usar ambos,
@@ -31,6 +33,12 @@ export interface AnalyticsResult {
   query: AnalyticsQuery;
   populations: { selected: Population; allConfirmed: Population; submissionCohort: Population; conversionCohort: Population; cycle: Population };
   coverage: { precision: Record<string, Population>; certainty: Record<string, Population>; missing: Record<string, Population> };
+  /** Todos os eventos efetivos das candidaturas selecionadas no corte, independentemente do período de ocorrência. */
+  occurrenceDateCoverage: {
+    unit: 'event';
+    denominator: number;
+    buckets: Record<OccurrenceDateBucket, { eventCount: number; applicationIds: string[] }>;
+  };
   conversions: Record<ReachedCategory, Metric>;
   completed: Record<ReachedCategory, Population>;
   groups: Record<'stack' | 'discoveryChannel' | 'submissionPlatform' | 'sentCv', AnalyticsGroup[]>;
@@ -43,4 +51,7 @@ export interface AnalyticsResult {
   supersededEventIds: string[];
   eventAttribution: { eventId: string; originalApplicationId: string; canonicalApplicationId: string }[];
   firstReturn: { medianDays: number | null; eligibleN: number; applicationIds: string[]; distribution: { days: number; applicationIds: string[] }[]; exclusions: Record<string, Population> };
+}
+export interface AnalyticsResponse extends AnalyticsResult {
+  occurrenceDateDrilldown: Record<OccurrenceDateBucket, string>;
 }

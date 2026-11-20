@@ -1,4 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type pg from 'pg';
 import { authenticateBearer } from '../../server/auth';
@@ -12,6 +15,10 @@ import { LEGACY_HEADER, IMPORTER_VERSION, PARSER_VERSION, parseLegacyCsv, sha256
 import { unknownDate } from '../fixtures/career';
 import type { DateValue } from '../../shared/model';
 import { loadAppliedImportStates } from '../../server/repositories/transfers';
+import { canonicalJson } from '../../domain/export';
+import { reconcileCutoverFiles } from '../../scripts/cutover-check';
+import { createLegacyPreview } from '../../scripts/import-legacy';
+import { syntheticCareerApi } from '../helpers/synthetic-career';
 
 const owner = randomUUID(); const cycleId = randomUUID();
 function source(rows: string[][], markdown = '\ufeff# Revisão fictícia\r\nTexto preservado.\r\n') {
@@ -24,6 +31,56 @@ function source(rows: string[][], markdown = '\ufeff# Revisão fictícia\r\nText
 const row = (id: number, order = '') => [`V${700 + id}`, 'Empresa inventada', 'Engenharia', 'literal desconhecido', 'JOB-SYNTH', '', 'https://example.test/job?raw=1', 'C:\\curriculos\\ficcional.pdf', 'confirmado', '', 'Relato de envio fictício', 'CV A | CV B', 'Narrativa sem data', order, 'fonte literal', 'nota fonte', '2020-02-03'];
 const interpretation = { track: null, applicationInstance: 'initial', cycleRelation: 'unknown', kind: 'desconhecido', provider: null, tenant: null };
 const allDecisions = () => Object.fromEntries(LEGACY_HEADER.map((name) => [name, name === 'observacoes' ? 'current' : 'source']));
+
+it('reconciles a native skip receipt whose reply is newer than its applied baseline', async () => {
+  const api = await syntheticCareerApi();
+  const directory = await mkdtemp(path.join(tmpdir(), 'career-native-cutover-'));
+  const sourceDir = path.join(directory, 'source'), privateDir = path.join(directory, 'private');
+  const post = (unit: string, data: unknown) => api.request('/api/v1/imports/apply', {
+    method: 'POST', headers: { ...api.headers, 'content-type': 'application/json', 'idempotency-key': randomUUID() },
+    body: JSON.stringify({ unit, data }),
+  });
+  const cycle = { id: randomUUID(), expectedVersion: null as number | null, resetDate: unknownDate, resetMarker: null, isCurrent: true };
+  async function prepareRun(addBom: boolean) {
+    const file = source([row(1)]).sources[0]!;
+    const original = Buffer.from(file.bytesBase64, 'base64');
+    // Muda o hash do arquivo sem mudar os bytes da linha nem exigir uma revisão legada.
+    const bytes = addBom ? Buffer.concat([Buffer.from('\ufeff'), original]) : original;
+    const sources = [{ name: file.name, bytesBase64: bytes.toString('base64') }];
+    await writeFile(path.join(sourceDir, file.name), bytes);
+    const preview = await createLegacyPreview({ sourceDir, privateDir, files: [file.name] });
+    const prepared = await post('prepare', { manifest: preview.manifest, sources, cycle });
+    expect(prepared.status).toBe(200);
+    return { runId: prepared.json.runId, manifestFile: path.join(preview.directory, 'manifest.json') };
+  }
+  const applyRow = (runId: string) => post('application', { runId, legacyId: 'V701', expectedVersion: null, expectedOpportunityVersion: null, interpretation, decisions: null });
+  try {
+    await mkdir(sourceDir);
+    await mkdir(privateDir);
+    const initial = await prepareRun(false);
+    const applied = await applyRow(initial.runId);
+    expect(applied.status).toBe(200);
+    const { applicationId } = applied.json;
+    expect((await post('complete', { runId: initial.runId, reviewRequired: false })).status).toBe(200);
+    expect((await api.post({ operation: 'archive_application', application: { id: applicationId, expectedVersion: 1 } })).status).toBe(200);
+    cycle.expectedVersion = 1;
+    const current = await prepareRun(true);
+    const skipped = await applyRow(current.runId);
+    expect(skipped.status).toBe(200);
+    expect(skipped.json).toEqual({ applicationId, version: 2, result: 'skipped' });
+    expect((await post('complete', { runId: current.runId, reviewRequired: false })).status).toBe(200);
+    const exported = await api.request('/api/v1/exports?format=json', { headers: api.headers });
+    expect(exported.status).toBe(200);
+    const exportFile = path.join(privateDir, 'export.json');
+    await writeFile(exportFile, canonicalJson(exported.json));
+    expect(await reconcileCutoverFiles(current.manifestFile, exportFile)).toMatchObject({
+      exitCode: 0, counts: { registros_verificados: 1, reaplicacoes_com_baseline: 1, registros_com_versao_posterior: 1 }, discrepancies: {},
+    });
+  } finally {
+    await api.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 describe('importação legada com autorização, unidades atômicas e retomada', () => {
   let admin: pg.Client; let database: ReturnType<typeof createDatabase>; let service: ReturnType<typeof createImportService>; let actor: Awaited<ReturnType<typeof authenticateBearer>>;
@@ -67,7 +124,13 @@ describe('importação legada com autorização, unidades atômicas e retomada',
   it('mantém baseline aplicado após skip e exige decisões por campo com versões atuais', async () => {
     const firstRun = await prepare(); const first = await apply(firstRun.runId, 'V701');
     await createApplicationService(database)(actor, { idempotencyKey: randomUUID(), command: { operation: 'update_application', application: { id: first.applicationId, expectedVersion: 1 }, changes: { notes: 'edição humana', track: 'Trilha humana' }, affectedBatches: [] } });
-    const metadata = await prepare(source([row(1)], '# Outro metadado fictício')); const skipped = await apply(metadata.runId, 'V701'); expect(skipped.result).toBe('skipped');
+    const metadata = await prepare(source([row(1)], '# Outro metadado fictício')); const skipped = await apply(metadata.runId, 'V701');
+    expect(skipped).toEqual({ applicationId: first.applicationId, version: 2, result: 'skipped' });
+    const retained = (await admin.query(`SELECT r.applied_target_version, r.unit_result, a.after_data->'unit_result' AS audited
+      FROM career.import_rows r JOIN career.source_files f ON f.owner_id=r.owner_id AND f.id=r.source_file_id
+      JOIN career.audit_log a ON a.owner_id=r.owner_id AND a.entity_type='import_rows' AND a.entity_id=r.id AND a.operation='insert'
+      WHERE f.import_run_id=$1`, [metadata.runId])).rows;
+    expect(retained).toEqual([{ applied_target_version: 1, unit_result: skipped, audited: skipped }]);
     const changedRow = row(1); changedRow[15] = 'edição na fonte'; const changed = await prepare(source([changedRow]));
     expect(await service.preview(actor, { runId: changed.runId })).toMatchObject({ diff: [{ legacyId: 'V701', kind: 'conflict' }] });
     await expect(apply(changed.runId, 'V701')).rejects.toMatchObject({ code: 'CONFLICT' });

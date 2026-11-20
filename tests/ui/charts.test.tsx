@@ -10,6 +10,7 @@ import type { Session } from '@supabase/supabase-js';
 import type { AnalyticsQuery, AnalyticsResult, AnalyticsRow, AnalyticsGroup } from '../../shared/analytics';
 import { buildAnalytics } from '../../domain/metrics';
 import AnalyticsPage from '../../src/features/analytics/AnalyticsPage';
+import { ListPage } from '../../src/features/applications/ListPage';
 import { createAppRuntime } from '../../src/app/runtime';
 import type { AuthPort } from '../../src/lib/auth';
 
@@ -31,6 +32,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const query: AnalyticsQuery = { operation: 'metrics', period: { from: '2026-11-14', to: '2026-11-16' }, population: 'confirmed', dimension: 'batch', asOf: '2026-11-17T12:00:00Z', dailyGoal: 5, submissionScope: 'all_dates' };
+const occurrenceDateDrilldown = { exactDay: 'a'.repeat(64), imprecise: 'b'.repeat(64), unknown: 'c'.repeat(64) };
 function fixture(empty = false, distinct = false): AnalyticsResult {
   const row = (n: number, patch: Partial<AnalyticsRow> = {}): AnalyticsRow => ({ id: id(n), version: 1, displayId: `N${String(n).padStart(6, '0')}`, submissionStatus: 'confirmado', submittedDate: { precision: 'day', certainty: 'exact', value: '2026-11-15' }, countingEligible: true, canonicalApplicationId: null, stage: 'rejeicao', archivedAt: null, cycleRelation: 'after_reset', cycleOrder: n, stack: ['React', 'TS'], discoveryChannel: 'canal_desconhecido', submissionPlatform: '<img src=x onerror=alert(1)>', resumeIds: [], company: null, title: null, seniority: null, modality: null, batchIds: [], ...patch });
   if (distinct) return buildAnalytics([row(1), row(2, { submittedDate: { precision: 'day', certainty: 'exact', value: '2025-01-01' } })], [
@@ -41,12 +43,12 @@ function fixture(empty = false, distinct = false): AnalyticsResult {
 }
 function Location() { return <output aria-label="Destino">{useLocation().pathname + useLocation().search}</output>; }
 function Back() { const navigate = useNavigate(); return <button onClick={() => navigate(-1)}>Voltar à análise</button>; }
-async function mount(options: { empty?: boolean; failed?: boolean; data?: AnalyticsResult; routed?: boolean; metadata?: (path: string) => Promise<Response> } = {}) {
+async function mount(options: { empty?: boolean; failed?: boolean; data?: AnalyticsResult; routed?: boolean; initialDrilldown?: string; metadata?: (path: string) => Promise<Response> } = {}) {
   let failed = options.failed; const reads: string[] = [];
   const port: AuthPort = { onAuthStateChange(callback) { queueMicrotask(() => callback('INITIAL_SESSION', { access_token: 'synthetic', user: { id: id(1) } } as Session)); return { data: { subscription: { unsubscribe() {} } } }; }, signInWithPassword: async () => ({ error: null }), resetPasswordForEmail: async () => ({ error: null }), updateUser: async () => ({ error: null }), signOut: async () => ({ error: null }) };
-  const runtime = createAppRuntime(port, async (input) => { const path = String(input); reads.push(path); if (options.metadata && !path.startsWith('/api/v1/analytics?')) return options.metadata(path); if (failed) return Response.json({}, { status: 503 }); return Response.json(options.data ?? fixture(options.empty)); });
+  const runtime = createAppRuntime(port, async (input) => { const path = String(input); reads.push(path); if (options.metadata && !path.startsWith('/api/v1/analytics?')) return options.metadata(path); if (failed) return Response.json({}, { status: 503 }); return Response.json({ ...(options.data ?? fixture(options.empty)), occurrenceDateDrilldown }); });
   await waitFor(() => expect(runtime.auth.getSnapshot().status).toBe('authenticated'));
-  const view = render(<QueryClientProvider client={runtime.query}><MemoryRouter initialEntries={['/analises']}>{options.routed ? <Routes><Route path="/analises" element={<AnalyticsPage runtime={runtime} />} /><Route path="/vagas" element={<p>Lista explicativa</p>} /></Routes> : <AnalyticsPage runtime={runtime} />}<Location /><Back /></MemoryRouter></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={runtime.query}><MemoryRouter initialEntries={[options.initialDrilldown ?? '/analises']}>{options.routed ? <Routes><Route path="/analises" element={<AnalyticsPage runtime={runtime} />} /><Route path="/vagas" element={options.initialDrilldown ? <ListPage runtime={runtime} /> : <p>Lista explicativa</p>} /></Routes> : <AnalyticsPage runtime={runtime} />}<Location /><Back /></MemoryRouter></QueryClientProvider>);
   return { reads, runtime, retry: () => { failed = false; }, close: async () => { view.unmount(); await runtime.dispose(); } };
 }
 function chart(title: string) { return engine.instances.findLast((instance) => instance.element.getAttribute('aria-label')?.startsWith(title))!; }
@@ -202,6 +204,37 @@ describe('accessible evidence-backed analytics', () => {
     expect(screen.getByRole('region', { name: 'Envios por dia' })).toHaveTextContent('Meta');
     expect(screen.getByRole('region', { name: 'Stack informada' })).toHaveTextContent('Grupos podem se sobrepor');
     expect(screen.getByRole('region', { name: 'Acontecimentos no período' })).toHaveTextContent('Não acrescentam novos envios');
+    await h.close();
+  });
+  it('labels the occurrence-date denominator in events and opens the matching application list', async () => {
+    const data = fixture();
+    const h = await mount({ data });
+    const coverage = await screen.findByRole('region', { name: 'Data de ocorrência dos eventos' });
+    const exact = within(coverage).getByRole('row', { name: /^Dia exato de ocorrência/ });
+    expect(within(exact).getByRole('cell', { name: '1 / 1 evento' })).toBeVisible();
+    await userEvent.click(within(exact).getByRole('button', { name: 'Ver candidaturas: Dia exato de ocorrência' }));
+    const params = new URLSearchParams(screen.getByLabelText('Destino').textContent!.split('?')[1]);
+    expect(JSON.parse(params.get('explain')!)).toEqual({ kind: 'occurrenceDateCoverage', bucket: 'exactDay', selectionKey: occurrenceDateDrilldown.exactDay });
+    expect(JSON.parse(params.get('query')!)).toEqual(data.query);
+    await h.close();
+  });
+  it('recalculates a stale occurrence selection with the same normalized filter and a new cutoff', async () => {
+    const original = { ...query, filters: { company: ['Fictícia'] }, dimension: 'company' };
+    const parameters = new URLSearchParams({ query: JSON.stringify(original), explain: JSON.stringify({ kind: 'occurrenceDateCoverage', bucket: 'exactDay', selectionKey: 'a'.repeat(64) }) });
+    const h = await mount({
+      routed: true, initialDrilldown: `/vagas?${parameters}`,
+      metadata: async () => Response.json({ error: { code: 'ANALYTICS_SELECTION_STALE' } }, { status: 409 }),
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent('A lista mudou desde o cálculo desta análise.');
+    expect(screen.queryByRole('table')).toBeNull();
+    await userEvent.click(screen.getByRole('link', { name: 'Recalcular análise' }));
+    await screen.findByRole('region', { name: 'Data de ocorrência dos eventos' });
+    const read = h.reads.find((path) => path.startsWith('/api/v1/analytics?'))!;
+    const outgoing = JSON.parse(new URL(read, 'http://localhost').searchParams.get('query')!);
+    expect(outgoing).toEqual({
+      operation: 'metrics', period: original.period, population: original.population, dimension: 'company',
+      submissionScope: original.submissionScope, filters: original.filters,
+    });
     await h.close();
   });
   it('null ratio and null median are sem dados and N/D, never a zero conversion', async () => {

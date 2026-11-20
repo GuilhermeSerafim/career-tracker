@@ -43,6 +43,50 @@ function groupCoverage(rows: AnalyticsRow[], key: (row: AnalyticsRow) => string)
   for (const row of rows) (groups[key(row)] ??= []).push(row.id);
   return Object.fromEntries(Object.entries(groups).map(([name, ids]) => [name, population(coverageLabel(name), ids)]));
 }
+/** Os IDs de entrada provêm de uma única projeção. Os eventos mantêm a FK física. */
+export function canonicalAttribution(rows: readonly Pick<AnalyticsRow, 'id' | 'canonicalApplicationId'>[]) {
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const canonicalIds = new Map<string, string>();
+  return (id: string): string => {
+    const visited = new Set<string>();
+    let current = id;
+    while (true) {
+      const root = canonicalIds.get(current);
+      if (root) { current = root; break; }
+      if (visited.has(current)) throw new Error('Ciclo de redirecionamento canônico inválido.');
+      visited.add(current);
+      const row = rowsById.get(current);
+      if (!row) throw new Error('Aplicação canônica ausente da projeção.');
+      if (row.canonicalApplicationId === null) break;
+      current = row.canonicalApplicationId;
+    }
+    for (const member of visited) canonicalIds.set(member, current);
+    return current;
+  };
+}
+export function eventHistory<T extends Pick<AnalyticsEvent, 'id' | 'applicationId' | 'recordedAt' | 'supersedesEventId'>>(events: T[], canonical: (id: string) => string, asOf: string) {
+  const cutoff = instantNanoseconds(asOf);
+  const known = events.filter((event) => instantNanoseconds(event.recordedAt) <= cutoff);
+  for (const event of known) canonical(event.applicationId);
+  const knownById = new Map(known.map((event) => [event.id, event]));
+  const superseded = new Set<string>();
+  const validated = new Set<string>();
+  for (const event of known) {
+    const visited = new Set<string>();
+    let current = event;
+    while (!validated.has(current.id)) {
+      if (visited.has(current.id)) throw new Error('Ciclo de correções inválido.');
+      visited.add(current.id);
+      if (current.supersedesEventId === null) break;
+      const target = knownById.get(current.supersedesEventId);
+      if (!target || canonical(target.applicationId) !== canonical(current.applicationId)) throw new Error('Correção sem evento original compatível no corte de conhecimento.');
+      superseded.add(target.id);
+      current = target;
+    }
+    for (const id of visited) validated.add(id);
+  }
+  return { known, superseded };
+}
 function firstReturn(rows: AnalyticsRow[], events: AnalyticsEvent[]): AnalyticsResult['firstReturn'] {
   const excluded: Record<string, string[]> = { imprecise_submission: [], uncertain_response: [], response_before_submission: [], no_recorded_response: [] };
   const distribution = new Map<number, string[]>();
@@ -92,50 +136,13 @@ export function buildAnalytics(inputRows: AnalyticsRow[], inputEvents: Analytics
     const row = analyticsRowSchema.parse(input);
     return { ...row, canonicalApplicationId: row.canonicalApplicationId?.toLowerCase() ?? null, resumeIds: row.resumeIds.map((id) => id.toLowerCase()), batchIds: row.batchIds.map((id) => id.toLowerCase()) };
   }));
-  const rowsById = new Map(rows.map((row) => [row.id, row]));
-  const canonicalIds = new Map<string, string>();
-  const canonicalId = (id: string): string => {
-    const cached = canonicalIds.get(id);
-    if (cached) return cached;
-    const visited = new Set<string>();
-    let current = id;
-    while (true) {
-      const intermediateRoot = canonicalIds.get(current);
-      if (intermediateRoot) { current = intermediateRoot; break; }
-      if (visited.has(current)) throw new Error('Ciclo de redirecionamento canônico inválido.');
-      visited.add(current);
-      const row = rowsById.get(current);
-      if (!row) throw new Error('Aplicação canônica ausente da projeção.');
-      if (row.canonicalApplicationId === null) break;
-      current = row.canonicalApplicationId;
-    }
-    for (const member of visited) canonicalIds.set(member, current);
-    return current;
-  };
+  const canonicalId = canonicalAttribution(rows);
   for (const row of rows) canonicalId(row.id);
-  const cutoff = instantNanoseconds(query.asOf);
-  const known = unique(inputEvents.map((input) => {
+  const normalizedEvents = unique(inputEvents.map((input) => {
     const event = analyticsEventSchema.parse(input);
     return { ...event, applicationId: event.applicationId.toLowerCase(), supersedesEventId: event.supersedesEventId?.toLowerCase() ?? null };
-  })).filter((event) => instantNanoseconds(event.recordedAt) <= cutoff);
-  for (const event of known) canonicalId(event.applicationId);
-  const knownById = new Map(known.map((event) => [event.id, event]));
-  const superseded = new Set<string>();
-  const validated = new Set<string>();
-  for (const event of known) {
-    const visited = new Set<string>();
-    let current = event;
-    while (!validated.has(current.id)) {
-      if (visited.has(current.id)) throw new Error('Ciclo de correções inválido.');
-      visited.add(current.id);
-      if (current.supersedesEventId === null) break;
-      const target = knownById.get(current.supersedesEventId);
-      if (!target || canonicalId(target.applicationId) !== canonicalId(current.applicationId)) throw new Error('Correção sem evento original compatível no corte de conhecimento.');
-      superseded.add(target.id);
-      current = target;
-    }
-    for (const id of visited) validated.add(id);
-  }
+  }));
+  const { known, superseded } = eventHistory(normalizedEvents, canonicalId, query.asOf);
   const selected = rows.filter((row) => matches(row, query)).filter((row) => query.population === 'all' || (query.population === 'confirmed' ? row.submissionStatus === 'confirmado' : query.population === 'saved' ? row.submissionStatus === 'nao_enviado' : row.submissionStatus === 'nao_confirmado'));
   const allConfirmed = confirmed(selected);
   const inPeriod = (day: string | null) => day !== null && day >= query.period.from && day <= query.period.to;
@@ -200,11 +207,25 @@ export function buildAnalytics(inputRows: AnalyticsRow[], inputEvents: Analytics
     const ids = [...week.applicationIds, ...point.applicationIds].sort();
     weeks.set(monday, { ...week, applicationIds: ids, count: ids.length, goal: week.goal + query.dailyGoal, difference: ids.length - week.goal - query.dailyGoal });
   }
-  const periodEvents = events.filter((event) => inPeriod(toLocalDay(event.occurredDate)));
+  const occurrenceBuckets = {
+    exactDay: { eventCount: 0, applications: new Set<string>() },
+    imprecise: { eventCount: 0, applications: new Set<string>() },
+    unknown: { eventCount: 0, applications: new Set<string>() },
+  };
+  const periodEvents: AnalyticsEvent[] = [];
+  for (const event of events) {
+    const day = toLocalDay(event.occurredDate);
+    const bucket = day !== null ? occurrenceBuckets.exactDay : event.occurredDate.precision === 'unknown' ? occurrenceBuckets.unknown : occurrenceBuckets.imprecise;
+    bucket.eventCount++;
+    bucket.applications.add(event.applicationId);
+    if (inPeriod(day)) periodEvents.push(event);
+  }
+  const occurrenceBucket = ({ eventCount, applications }: typeof occurrenceBuckets.exactDay) => ({ eventCount, applicationIds: [...applications].sort() });
   return {
     asOf: query.asOf, query,
     populations: { selected: rowPopulation(({ confirmed: 'Confirmadas', saved: 'Salvas', unknown: 'Envio não confirmado', all: 'Todos os estados de envio' })[query.population], selected), allConfirmed: rowPopulation('Confirmadas elegíveis em todas as datas', allConfirmed), submissionCohort: rowPopulation('Confirmadas enviadas no período', submissionCohort), conversionCohort: rowPopulation(query.submissionScope === 'all_dates' ? 'Conversão: todas as datas' : 'Conversão: envios no período', cohort), cycle: rowPopulation('Confirmadas após reinício com ordem atribuída', allConfirmed.filter((row) => row.cycleRelation === 'after_reset' && row.cycleOrder !== null)) },
     coverage: { precision: groupCoverage(allConfirmed, (row) => row.submittedDate.precision), certainty: groupCoverage(allConfirmed, (row) => row.submittedDate.precision === 'unknown' ? 'unknown' : row.submittedDate.certainty), missing: { submittedDay: rowPopulation('Sem dia exato de envio', allConfirmed.filter((row) => toLocalDay(row.submittedDate) === null)), sentCv: rowPopulation('Sem CV enviado informado', allConfirmed.filter((row) => row.resumeIds.length === 0)) } },
+    occurrenceDateCoverage: { unit: 'event', denominator: events.length, buckets: { exactDay: occurrenceBucket(occurrenceBuckets.exactDay), imprecise: occurrenceBucket(occurrenceBuckets.imprecise), unknown: occurrenceBucket(occurrenceBuckets.unknown) } },
     conversions: conversionsFor(cohort), completed,
     groups: { stack: makeGroups(dimensionKeys.stack, true, { key: 'sem_stack_informada', label: 'Sem stack informada' }), discoveryChannel: makeGroups(dimensionKeys.channel, false, { key: 'canal_desconhecido', label: 'Canal desconhecido' }), submissionPlatform: makeGroups(dimensionKeys.platform, false, { key: 'plataforma_desconhecida', label: 'Plataforma desconhecida' }), sentCv: makeGroups((row) => row.resumeIds, true, { key: 'sem_cv_informado', label: 'Sem CV enviado informado' }) },
     selectedGrouping,

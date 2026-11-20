@@ -1,5 +1,6 @@
 ﻿import type { AnalyticsQuery, AnalyticsResult, AnalyticsGroup, ReachedCategory } from '../../../shared/analytics';
 import type { Metric } from '../../../shared/model';
+import type { OccurrenceDateBucket } from '../../../shared/analytics';
 import type { DisplayMetadata } from './metadata';
 
 export type Explanation =
@@ -12,7 +13,8 @@ export type Explanation =
   | { kind: 'firstReturn'; selection: 'eligible' }
   | { kind: 'firstReturnDistribution'; days: number }
   | { kind: 'firstReturnExclusion'; reason: string }
-  | { kind: 'coverage'; collection: 'precision' | 'certainty' | 'missing'; key: string };
+  | { kind: 'coverage'; collection: 'precision' | 'certainty' | 'missing'; key: string }
+  | { kind: 'occurrenceDateCoverage'; bucket: OccurrenceDateBucket; selectionKey: string };
 export interface ChartRow { identity: string; label: string; actionLabel?: string; value: number; detail: string; explanation: Explanation; goal?: number; difference?: number; metrics?: { label: string; text: string; explanation: Explanation }[] }
 export interface ChartModel { title: string; description: string; population: string; rows: ChartRow[]; temporal?: boolean }
 export const categories: Record<ReachedCategory, string> = { response: 'Retorno substantivo', assessment: 'Avaliação', interview: 'Entrevista', offer: 'Oferta' };

@@ -102,6 +102,33 @@ it('counts completed interview once without interpreting scores or registration 
   expect(result.populations.submissionCohort.count).toBe(0);
   expect(result.firstReturn.exclusions.no_recorded_response?.applicationIds).toEqual([id(1)]);
 });
+it('covers effective occurrence dates across all dates and drills down to unique matching applications', () => {
+  const rows = [row(1, { company: 'Selected' }), row(2, { company: 'Selected' }), row(3)];
+  const events = [
+    event(20, 1, { kind: 'avaliacao', state: 'concluido', occurredDate: unknown }),
+    event(21, 1, { kind: 'entrevista', state: 'concluido', occurredDate: unknown }),
+    event(22, 2, { occurredDate: { precision: 'month', certainty: 'exact', value: '2026-11' } }),
+    event(23, 2, { occurredDate: { precision: 'day', certainty: 'approximate', value: '2026-11-16' } }),
+    event(24, 2),
+    event(25, 2, { occurredDate: day('2025-01-01') }),
+    event(26, 2, { occurredDate: unknown }),
+    event(27, 2, { kind: 'nota', supersedesEventId: id(26) }),
+    event(28, 3, { occurredDate: unknown }),
+    event(29, 2, { occurredDate: unknown, recordedAt: '2026-11-21T12:00:00Z' }),
+  ];
+  const result = buildAnalytics(rows, events, { ...query, filters: { company: ['Selected'] }, submissionScope: 'all_dates' });
+  expect(result.occurrenceDateCoverage).toMatchObject({
+    unit: 'event', denominator: 7,
+    buckets: {
+      exactDay: { eventCount: 3, applicationIds: [id(2)] },
+      imprecise: { eventCount: 2, applicationIds: [id(2)] },
+      unknown: { eventCount: 2, applicationIds: [id(1)] },
+    },
+  });
+  expect(result.completed.assessment.applicationIds).toEqual([id(1)]);
+  expect(result.completed.interview.applicationIds).toEqual([id(1)]);
+  expect(result.eventsInPeriod.eventIds).toEqual([id(24), id(27)]);
+});
 it('attributes redirected history to canonical UUIDs while preserving original event IDs', () => {
   const rows = [row(1), row(2, { canonicalApplicationId: id(1), countingEligible: false }), row(3, { canonicalApplicationId: id(2), countingEligible: false })];
   const result = buildAnalytics(rows, [event(20, 3), event(21, 1), event(22, 2, { kind: 'entrevista' })], query);
