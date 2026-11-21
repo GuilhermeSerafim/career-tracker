@@ -335,4 +335,29 @@ describe('importação legada com autorização, unidades atômicas e retomada',
     expect((await admin.query('SELECT rectification_pending FROM career.batches WHERE id=$1', [first.batchId])).rows[0].rectification_pending).toBe(true);
     expect((await admin.query('SELECT eligible FROM career.batch_members WHERE batch_id=$1 AND application_id=$2', [first.batchId, populationIds[0]])).rows[0].eligible).toBe(true);
   });
+  it('bloqueia a fonte sem sucessor e aplica a última ordem preparada', async () => {
+    await expect(prepare(source([row(988, '9007199254740991')]))).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    const last = row(989, '9007199254740990');
+    const run = await prepare(source([last]));
+    const app = await apply(run.runId, last[0]!);
+    expect((await admin.query('SELECT cycle_order FROM career.applications WHERE id=$1', [app.applicationId])).rows[0].cycle_order).toBe('9007199254740990');
+    expect((await admin.query('SELECT next_order FROM career.cycles WHERE id=$1', [cycleId])).rows[0].next_order).toBe('9007199254740991');
+  });
+  it('preserva a ordem legada sem sucessor e reverte a unidade preparada', async () => {
+    const original = row(990);
+    const first = await prepare(source([original]));
+    const app = await apply(first.runId, original[0]!);
+    await database.transaction(actor, tx => tx.query('UPDATE career.applications SET cycle_order=9007199254740991 WHERE id=$1', [app.applicationId]));
+    const next = await prepare(source([original], '# Nova origem sintética'));
+    const counter = () => admin.query('SELECT next_order,version FROM career.cycles WHERE id=$1', [cycleId]).then(result => result.rows);
+    const before = await counter();
+    await expect(apply(next.runId, original[0]!)).rejects.toMatchObject({ code: 'CYCLE_CONFIGURATION' });
+    expect(await counter()).toEqual(before);
+    expect((await admin.query('SELECT id FROM career.import_rows WHERE source_file_id IN (SELECT id FROM career.source_files WHERE import_run_id=$1)', [next.runId])).rows).toEqual([]);
+    const other = source([original], '# Outro ciclo sintético');
+    other.cycle.id = randomUUID();
+    other.cycle.isCurrent = false;
+    await expect(service.prepare(actor, other)).rejects.toMatchObject({ code: 'CYCLE_CONFIGURATION' });
+    expect((await admin.query('SELECT id FROM career.cycles WHERE id=$1', [other.cycle.id])).rows).toEqual([]);
+  });
 });

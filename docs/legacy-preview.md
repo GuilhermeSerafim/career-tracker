@@ -1,5 +1,16 @@
 # Prévia privada do legado
 
+## Importar novas candidaturas em Vagas
+
+1. Entre como proprietário, abra **Vagas → Importar CSV** e selecione um CSV legado em UTF-8. O limite por arquivo é 1 MiB e 500 registros. Para testar localmente, use [legacy.csv](../tests/fixtures/legacy.csv), que contém dados fictícios.
+2. Clique em **Conferir arquivo** e revise os registros prontos, os já importados e os que precisam de atenção. Datas e campos vazios, conflitos de ID ou de ordem e sinais de duplicidade aparecem na prévia. Um erro de formato exige corrigir o arquivo e gerar outra prévia. A prévia é somente leitura.
+3. Marque a confirmação e clique em **Importar**. Uma transação privada arquiva os bytes originais e grava as linhas prontas, com seus IDs, ordem documentada, evidências e referências compatíveis. O recibo informa quantas linhas entraram, já estavam importadas ou ficaram para revisão.
+4. Se a resposta cair, clique em **Repetir confirmação** na mesma aba. Em uma nova aba ou após recarregar, selecione o mesmo arquivo e confira a prévia atual. O servidor compara os IDs e a versão dos registros antes de gravar.
+
+O CSV aceita importação em uma conta sem ciclo iniciado. Datas omitidas e relação com o ciclo ficam desconhecidas, e a etapa narrativa permanece como texto de origem. Casos ambíguos ou divergentes ficam pendentes. Use o processo de reconciliação local abaixo para interpretar identidades, etapas, lotes ou revisões históricas e resolver divergências com decisões explícitas.
+
+## Capturar e conferir o legado localmente
+
 Esta etapa captura controles para revisão local. A fonte operacional continua em uso. Não há importação no banco nem mudança de fonte operacional.
 
 Crie previamente um diretório privado fora do repositório principal, de seus worktrees e do diretório de origem. Selecione exatamente um CSV e, opcionalmente, controles Markdown/texto com `--file` repetido. Os nomes devem ser simples, sem caminhos. Exemplo com arquivos inteiramente fictícios:

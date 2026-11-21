@@ -10,17 +10,17 @@ export interface AppliedImportState extends PreviousImportState {
 
 /** Cada aplicação/reconciliação serializada avança a versão; skips não criam outro estado aplicado.
  * Hash, versão, original e interpretação vêm da mesma linha, sem inferir ordem por relógio/UUID. */
-export async function loadAppliedImportStates(transaction: Transaction, ownerId: string): Promise<AppliedImportState[]> {
+export async function loadAppliedImportStates(transaction: Transaction, ownerId: string, legacyIds: string[] | null = null): Promise<AppliedImportState[]> {
   const result = await transaction.query<{ legacy_id: string; row_hash: string; applied_target_version: number; version: number; original_text: string; resolution: AppliedImportState['resolution'] }>(`SELECT DISTINCT ON (r.legacy_id) r.legacy_id,r.row_hash,r.applied_target_version,a.version,r.original_text,r.resolution
     FROM career.import_rows r JOIN career.applications a ON a.owner_id=r.owner_id AND a.id=r.target_application_id
-    WHERE r.owner_id=$1 AND r.result='imported' AND r.applied_target_version IS NOT NULL
-    ORDER BY r.legacy_id,r.applied_target_version DESC`, [ownerId]);
+    WHERE r.owner_id=$1 AND r.result='imported' AND r.applied_target_version IS NOT NULL AND ($2::text[] IS NULL OR r.legacy_id=ANY($2))
+    ORDER BY r.legacy_id,r.applied_target_version DESC`, [ownerId, legacyIds]);
   return result.rows.map((row) => ({ legacyId: row.legacy_id, rawRowHash: row.row_hash, importedApplicationVersion: row.applied_target_version, currentApplicationVersion: row.version, originalText: row.original_text, resolution: row.resolution }));
 }
 
 /** Somente estado persistido; a base enviada no preview não autoriza atualização. */
-export async function loadImportBasis(transaction: Transaction, ownerId: string): Promise<PreviousImportState[]> {
-  return (await loadAppliedImportStates(transaction, ownerId)).map(({ legacyId, rawRowHash, importedApplicationVersion, currentApplicationVersion }) => ({ legacyId, rawRowHash, importedApplicationVersion, currentApplicationVersion }));
+export async function loadImportBasis(transaction: Transaction, ownerId: string, legacyIds?: string[]): Promise<PreviousImportState[]> {
+  return (await loadAppliedImportStates(transaction, ownerId, legacyIds)).map(({ legacyId, rawRowHash, importedApplicationVersion, currentApplicationVersion }) => ({ legacyId, rawRowHash, importedApplicationVersion, currentApplicationVersion }));
 }
 
 /** Lista fechada do contrato: credenciais, controles e colunas derivadas ficam fora. */

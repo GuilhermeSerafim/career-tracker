@@ -7,6 +7,8 @@ export const longTextSchema = z.string().max(50_000);
 export const labelSchema = z.string().trim().min(1).max(200);
 export const positiveVersionSchema = z.number().int().positive().max(2_147_483_647);
 export const orderSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+// O maior inteiro seguro representa um contador esgotado. Toda nova ordem precisa de um sucessor.
+export const assignableCycleOrderSchema = orderSchema.max(Number.MAX_SAFE_INTEGER - 1);
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const stackSchema = z.array(labelSchema).max(100);
 

@@ -15,12 +15,12 @@ const groups = [
   ['server', 'agent-policy.ts app.ts auth.ts config.ts database.ts dev.ts errors.ts input.ts logger.ts mutation.ts runtime.ts security-policy.ts unavailable.ts'],
   ['server/repositories', 'activity.ts career.ts identities.ts reviews.ts transfer-preflight.ts transfers.ts'],
   ['server/routes', 'maintenance.ts read.ts transfer.ts write.ts'],
-  ['server/services', 'activity.ts applications.ts credentials.ts exports.ts imports.ts reviews.ts'],
-  ['shared', 'agent-credentials.ts analytics.ts application-results.ts commands.ts model.ts queries.ts transfer.ts'],
+  ['server/services', 'activity.ts applications.ts credentials.ts csv-upload.ts exports.ts historical-integrity.ts historical-package.ts imports.ts reviews.ts'],
+  ['shared', 'agent-credentials.ts analytics.ts application-results.ts commands.ts csv-upload.ts historical-package.ts model.ts queries.ts transfer.ts'],
   ['src/app', 'App.tsx Shell.tsx query.ts runtime.ts validation.ts'],
   ['src/components', 'AsyncState.tsx ConflictDialog.tsx DateField.tsx SafeLink.tsx session.css'],
   ['src/features/analytics', 'AnalyticsPage.tsx Chart.tsx ChartTable.tsx analytics.css metadata.ts options.ts'],
-  ['src/features/applications', 'ActivityForm.tsx ApplicationActions.tsx ApplicationForm.tsx DetailPage.tsx Filters.tsx ListPage.tsx ResumeCreator.tsx application-data.ts applications.css'],
+  ['src/features/applications', 'ActivityForm.tsx ApplicationActions.tsx ApplicationForm.tsx CsvImportPage.tsx DetailPage.tsx Filters.tsx HistoricalImportPanel.tsx historical-import.ts ListPage.tsx ResumeCreator.tsx application-data.ts applications.css'],
   ['src/features/auth', 'LoginPage.tsx'],
   ['src/features/reviews', 'EditorActions.tsx ReviewsPage.tsx editor.ts reviews.css'],
   ['src/features/settings', 'AgentCredentials.tsx SettingsPage.tsx credential-session.ts transfer-client.ts'],
@@ -31,12 +31,12 @@ const groups = [
   ['supabase', '.gitignore config.toml'],
   ['supabase/migrations', '20261116003352_model_career_records_and_provenance.sql 20261116010237_restrict_career_data_to_configured_owner.sql 20261116014818_make_career_mutations_atomic_and_repeatable.sql 20261116133302_preserve_application_identity_and_corrections.sql 20261116154155_close_and_rectify_versioned_application_reviews.sql 20261116173420_import_legacy_records_with_durable_baselines.sql 20261116184127_export_and_restore_complete_private_history.sql 20261119175518_audited_technical_fixture_maintenance.sql'],
   ['supabase/schemas', '001_model.sql 002_security.sql 003_audit.sql 004_applications.sql 005_reviews.sql 006_imports.sql 007_transfers.sql 008_fixture_maintenance.sql'],
-  ['tests/e2e', 'accessibility.spec.ts career.spec.ts security.spec.ts'],
+  ['tests/e2e', 'accessibility.spec.ts career.spec.ts csv-upload.spec.ts historical-package.spec.ts security.spec.ts'],
   ['tests/fixtures', 'career.ts legacy.csv review.md'],
   ['tests/helpers', 'agent.ts api.ts command-budget.ts database-client-failure.ts database.ts integration-lifecycle.ts review-scenario.ts synthetic-browser.ts synthetic-career.ts today-scenario.ts'],
-  ['tests/integration', 'activity.test.ts agent-access.test.ts analytics-explain.test.ts application-detail.test.ts applications.test.ts contact-catalog.test.ts contacts.test.ts database-failures.test.ts http-boundaries.test.ts http.test.ts imports.test.ts mutation-audit.test.ts mutations.test.ts review-projection.test.ts review-ui-contract.test.ts reviews.test.ts security.test.ts transfer-preflight.test.ts transfers.test.ts'],
+  ['tests/integration', 'activity.test.ts agent-access.test.ts analytics-explain.test.ts application-detail.test.ts applications.test.ts contact-catalog.test.ts contacts.test.ts csv-upload.test.ts database-failures.test.ts http-boundaries.test.ts http.test.ts imports.test.ts mutation-audit.test.ts mutations.test.ts review-projection.test.ts review-ui-contract.test.ts reviews.test.ts security.test.ts transfer-preflight.test.ts transfers.test.ts'],
   ['tests/maintenance', 'technical-fixture.test.ts'],
-  ['tests/ui', 'agent-credentials.test.tsx charts.test.tsx controls.test.tsx detail.test.tsx forms.test.tsx reviews-settings.test.tsx session.test.tsx shell.test.tsx today.test.tsx transfer-client.test.tsx'],
+  ['tests/ui', 'agent-credentials.test.tsx charts.test.tsx controls.test.tsx csv-upload.test.tsx detail.test.tsx forms.test.tsx reviews-settings.test.tsx session.test.tsx shell.test.tsx today.test.tsx transfer-client.test.tsx'],
   ['tests/unit', 'agent-auth.test.ts agent-client.test.ts auth.test.ts build-privacy.test.ts contracts.test.ts cutover-check.test.ts cycles.test.ts database-boundary.test.ts dates.test.ts export.test.ts identity.test.ts import-bounds.test.ts import-preview.test.ts import.test.ts local-db-connection.test.ts local-db.test.ts metrics.test.ts mutation.test.ts private-transfer-io.test.ts publication-check.test.ts restore-target.test.ts security-policy.test.ts server-config.test.ts snapshot.test.ts transfer-preservation.test.ts'],
 ] as const;
 const allowed = new Set(groups.flatMap(([dir, names]) => names.split(' ').map(name => dir ? dir + '/' + name : name)));
@@ -168,6 +168,8 @@ const reviewedExamples = new Set([
   "1eccee3b605c6ea059e92cc9c4ab04c9bebef24bc33c5b445daa585d08572646",
   // tests/integration/contacts.test.ts
   "efe93b92374f02283dd0666d0a143bccb8c8b969577f94c1cd744a196cd36231",
+  // tests/integration/csv-upload.test.ts
+  '0993cb5751cd9aee005db1b72b184b77cccd107c32d20783bddf9d5892f1bdaa',
   // tests/integration/database-failures.test.ts
   "4a66b9af415d879420db68df94ac93baa1ccf5e2ec0a2aee97bb77af881b1174",
   // tests/integration/http-boundaries.test.ts
@@ -196,6 +198,8 @@ const reviewedExamples = new Set([
   "1ec90b134440b29bb188dfc152c89d9eb52c31b4b94151f344cb79a156b326f2",
   // tests/ui/controls.test.tsx
   "69a7deab99438d3549e3575bb190e3863f0a0f6ad05fdf4c77e2bb49c7100cc6",
+  // tests/ui/csv-upload.test.tsx
+  '41ff7f805fcb7aa41ff2e2b4f713d4d3d150b4b0b596a13880d257538e217fe1',
   // tests/ui/detail.test.tsx
   "9a8a16d15f10f6d51d99f2d868dd8749ce4dda6c0941533494bdcafa24d61868",
   // tests/ui/forms.test.tsx

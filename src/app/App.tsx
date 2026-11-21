@@ -9,6 +9,7 @@ import { Shell } from './Shell';
 import { TodayPage } from '../features/today/TodayPage';
 import { ApplicationForm } from '../features/applications/ApplicationForm';
 import { ListPage } from '../features/applications/ListPage';
+import { CsvImportPage } from '../features/applications/CsvImportPage';
 import { DetailPage } from '../features/applications/DetailPage';
 import { ReviewsPage } from '../features/reviews/ReviewsPage';
 import { SettingsPage } from '../features/settings/SettingsPage';
@@ -58,6 +59,7 @@ function OwnerBoundary({ runtime, accessPeriod, onLogout }: { runtime: AppRuntim
   </AccessFrame>;
   return <Shell onLogout={onLogout}><Routes>
     <Route path="/" element={<TodayPage runtime={runtime} />} />
+    <Route path="/vagas/importar" element={<CsvImportPage runtime={runtime} />} />
     <Route path="/vagas/nova" element={<ApplicationForm runtime={runtime} />} />
     <Route path="/vagas/:id" element={<DetailPage runtime={runtime} />} />
     <Route path="/vagas/:id/editar" element={<ApplicationForm runtime={runtime} />} />

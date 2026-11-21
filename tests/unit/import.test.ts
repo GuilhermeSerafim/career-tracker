@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { compareLegacyRows, parseLegacyCsv, LEGACY_HEADER } from '../../domain/import';
+import { compareLegacyRows, parseLegacyCsv, projectableLegacyLinks, LEGACY_HEADER } from '../../domain/import';
 
 const header = 'id,empresa,cargo,plataforma,codigo_vaga,chave_vaga,url_original,links_alternativos,status_envio,data_envio,evidencia_envio,cv_enviado,etapa,ordem_ciclo,fonte,observacoes,registrado_em';
 const raw = 'V901,"Empresa, Exemplo",Backend,ATS Exemplo,42,chave42,https://jobs.example.org/42,"file:///privado/a.pdf | javascript:alert(1)",confirmado,,Relato fictício,"CV A.pdf | CV B.pdf","Talvez entrevista, sem confirmação",1,Fixture,"  ação 🧭 ""citada""\r\nsegunda linha  ",2026-11-10\r\n';
@@ -89,4 +89,14 @@ describe('arquivo legado fictício', () => {
     expect(row.submittedDate).toEqual({ precision: 'unknown', value: null });
     expect(row.cycleOrder).toBeNull();
   });
+});
+
+it('prepara uma projeção por texto exato e distingue referências sem projeção de repetições', () => {
+  const first = { originalText: 'https://example.org/42?utm_source=one', classification: 'web' } as const;
+  const second = { originalText: 'https://example.org/42?utm_source=two', classification: 'web' } as const;
+  const original = [first, ...Array<typeof first>(2000).fill(first), second];
+  expect(projectableLegacyLinks(original)).toEqual({ links: [first, second], hasUnprojected: false });
+  expect(projectableLegacyLinks([...original, { originalText: 'urn:exemplo', classification: 'dangerous' }]))
+    .toEqual({ links: [first, second], hasUnprojected: true });
+  expect(original).toHaveLength(2002);
 });

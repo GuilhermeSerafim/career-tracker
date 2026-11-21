@@ -49,7 +49,8 @@ export async function syntheticBrowser(page: Page, api: Awaited<ReturnType<typeo
       const response = await api.request(url.pathname + url.search, { method: request.method(), headers: { ...(!expire ? { authorization: request.headers().authorization } : {}), ...(request.method() === 'POST' ? { 'content-type': request.headers()['content-type'], ...(request.headers()['idempotency-key'] ? { 'idempotency-key': request.headers()['idempotency-key'] } : {}) } : {}) }, body: request.postData() ?? undefined });
       if (request.method() === 'POST') {
         writes.push({ body: request.postData()!, key: request.headers()['idempotency-key']!, status: response.status });
-        if (loseSave && JSON.parse(request.postData()!).operation === lostOperation && response.status < 300) { loseSave = false; return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":{}}' }); }
+        const command = JSON.parse(request.postData()!);
+        if (loseSave && (command.operation ?? command.unit) === lostOperation && response.status < 300) { loseSave = false; return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":{}}' }); }
       }
       apiReads.push({ path: url.pathname, status: response.status });
       const headers = Object.fromEntries(Object.entries(response.headers).filter((entry): entry is [string, string] => typeof entry[1] === 'string' && !['connection', 'transfer-encoding', 'content-length'].includes(entry[0])));

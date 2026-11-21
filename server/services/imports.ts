@@ -2,28 +2,48 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { manifestSchema } from '../../scripts/import-legacy.js';
-import { compareLegacyRows, IMPORTER_VERSION, LEGACY_HEADER, parseLegacyCsv, projectLegacySourceAttribution, sha256, type LegacyRow } from '../../domain/import.js';
+import { compareLegacyRows, IMPORTER_VERSION, LEGACY_HEADER, parseLegacyCsv, projectableLegacyLinks, projectLegacySourceAttribution, sha256, type LegacyRow } from '../../domain/import.js';
+import { csvConfirmationSchema, type CsvReceipt } from '../../shared/csv-upload.js';
 import { MAX_SOURCE_ARCHIVE_BYTES, reviewSnapshotSchema } from '../../shared/transfer.js';
-import { cycleRelationSchema, dateValueSchema, eventFields, instantSchema, linkDataSchema, positiveVersionSchema, shortTextSchema, uuidSchema, type DateValue } from '../../shared/model.js';
+import { cycleRelationSchema, dateValueSchema, eventFields, instantSchema, positiveVersionSchema, shortTextSchema, uuidSchema, type DateValue } from '../../shared/model.js';
 import { normalizeTrack } from '../../domain/identity.js';
 import { SafeError, safeError } from '../errors.js';
 import { assertAuthenticatedOwner, type AuthenticatedOwner } from '../auth.js';
 import { createRequestContext, type AuthenticatedTransaction, type createDatabase } from '../database.js';
 import { loadAppliedImportStates, loadImportBasis } from '../repositories/transfers.js';
 import { lockApplicationIdentity, resolveOpportunityIdentity } from '../repositories/identities.js';
+import { cycleCounterFloor, requireCycleCounter } from '../repositories/reviews.js';
 import { canonicalRequestHash } from '../mutation.js';
 import { assertRepresentableJson } from '../input.js';
+import { approvedContract, historicalReviewHash, loadHistoricalReceipts, requireHistoricalApplication, verifyHistoricalProgress, type HistoricalRunState } from './historical-integrity.js';
+import { planCsvUpload, readCsvUpload } from './csv-upload.js';
 
 const unknownDate = { precision: 'unknown', value: null };
 const refSchema = z.strictObject({ runId: uuidSchema });
 const cycleSchema = z.strictObject({ id: uuidSchema, expectedVersion: positiveVersionSchema.nullable(), resetDate: dateValueSchema, resetMarker: z.string().max(200).nullable(), isCurrent: z.boolean() });
 export const importPrepareSchema = z.strictObject({ manifest: manifestSchema, sources: z.array(z.strictObject({ name: z.string().max(4096), bytesBase64: z.string().max(Math.ceil(MAX_SOURCE_ARCHIVE_BYTES / 3) * 4) })).min(1).max(100), cycle: cycleSchema });
+export function verifyImportSources(input: z.infer<typeof importPrepareSchema>) {
+    const { manifest } = input;
+    if (manifest.parsed.blocked || input.sources.length !== manifest.sources.length) throw new SafeError('INVALID_INPUT');
+    let size = 0; const verified = [];
+    for (const source of manifest.sources) {
+      const uploads = input.sources.filter((v) => v.name === source.name);
+      if (uploads.length !== 1) throw new SafeError('INVALID_INPUT');
+      const encoded = uploads[0]!.bytesBase64; const bytes = Buffer.from(encoded, 'base64'); size += bytes.length;
+      if (size > MAX_SOURCE_ARCHIVE_BYTES || bytes.toString('base64') !== encoded || bytes.length !== source.size || sha256(bytes) !== source.sha256) throw new SafeError('INVALID_INPUT');
+      if (/\.csv$/i.test(source.name) && !isDeepStrictEqual(parseLegacyCsv(bytes), manifest.parsed)) throw new SafeError('INVALID_INPUT');
+      let text: string; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw new SafeError('INVALID_INPUT'); }
+      assertRepresentableJson(text);
+      verified.push({ name: source.name, bytes, text, hash: sha256(bytes) });
+    }
+    return verified;
+}
 const interpretationSchema = z.strictObject({ track: z.string().max(200).nullable(), applicationInstance: z.string().trim().min(1).max(200), cycleRelation: cycleRelationSchema, kind: z.enum(['vaga', 'banco_talentos', 'pipeline', 'desconhecido']), provider: z.string().trim().min(1).max(200).nullable(), tenant: z.string().trim().min(1).max(200).nullable() })
   .refine((v) => (v.provider === null) === (v.tenant === null));
 const decisionsSchema = z.strictObject(Object.fromEntries(LEGACY_HEADER.map((key) => [key, z.enum(['source', 'current'])])) as Record<typeof LEGACY_HEADER[number], z.ZodEnum<{ source: 'source'; current: 'current' }>>);
 const historicalEventSchema = z.strictObject({ clientId: uuidSchema, ...eventFields }).refine((v) => v.kind !== 'envio_confirmado');
-const applicationSchema = refSchema.extend({ legacyId: z.string().regex(/^V\d+$/).max(200), expectedVersion: positiveVersionSchema.nullable(), expectedOpportunityVersion: positiveVersionSchema.nullable(), interpretation: interpretationSchema, decisions: decisionsSchema.nullable(), historicalEvents: z.array(historicalEventSchema).max(100).default([]), affectedBatches: z.array(z.strictObject({ id: uuidSchema, expectedVersion: positiveVersionSchema })).max(100).default([]) }).refine((v) => new Set(v.historicalEvents.map((e) => e.clientId)).size === v.historicalEvents.length && new Set(v.affectedBatches.map((b) => b.id)).size === v.affectedBatches.length);
-const reviewSchema = refSchema.extend({
+export const applicationSchema = refSchema.extend({ legacyId: z.string().regex(/^V\d+$/).max(200), expectedVersion: positiveVersionSchema.nullable(), expectedOpportunityVersion: positiveVersionSchema.nullable(), interpretation: interpretationSchema, decisions: decisionsSchema.nullable(), historicalEvents: z.array(historicalEventSchema).max(100).default([]), affectedBatches: z.array(z.strictObject({ id: uuidSchema, expectedVersion: positiveVersionSchema })).max(100).default([]) }).refine((v) => new Set(v.historicalEvents.map((e) => e.clientId)).size === v.historicalEvents.length && new Set(v.affectedBatches.map((b) => b.id)).size === v.affectedBatches.length);
+export const reviewSchema = refSchema.extend({
   batchNumber: z.number().int().positive().max(2_147_483_647), members: z.array(z.strictObject({ legacyId: z.string().regex(/^V\d+$/).max(200), capturedOrder: z.number().int().positive().safe(), expectedVersion: positiveVersionSchema })).length(30),
   markdownFile: z.string().max(4096).regex(/\.md$/i), closedAt: instantSchema.nullable(), historicalClosedDate: dateValueSchema, documentedUpdatedDate: dateValueSchema, snapshotTimeMeaning: z.enum(['import_capture', 'historical_instant']), snapshot: reviewSnapshotSchema,
   pendingIssues: z.array(z.string().max(50_000)).max(100),
@@ -31,9 +51,9 @@ const reviewSchema = refSchema.extend({
 type ApplicationInput = z.infer<typeof applicationSchema>;
 interface UnitResult { applicationId: string; version: number; result: 'imported' | 'skipped' }
 interface ReviewResult { reviewId: string; batchId: string }
-interface Run { id: string; unit_state: { cycleId: string; cycleConfig: Omit<z.infer<typeof cycleSchema>, 'expectedVersion'>; review?: { requestHash: string; result: ReviewResult }; completed?: { reviewRequired: boolean; runId: string; rowCount: number } }; status: string }
+interface Run { id: string; unit_state: HistoricalRunState & { cycleId: string; cycleConfig: Omit<z.infer<typeof cycleSchema>, 'expectedVersion'> }; status: string }
 async function runRow(tx: AuthenticatedTransaction, owner: string, runId: string): Promise<Run> {
-  const run = (await tx.query<Run>('SELECT id,unit_state,status FROM career.import_runs WHERE owner_id=$1 AND id=$2', [owner, runId])).rows[0];
+  const run = (await tx.query<Run>("SELECT id,unit_state,status FROM career.import_runs WHERE owner_id=$1 AND id=$2 AND unit_state->>'scope' IS DISTINCT FROM 'csv_upload'", [owner, runId])).rows[0];
   if (!run) throw new SafeError('NOT_FOUND'); return run;
 }
 async function readCsv(tx: AuthenticatedTransaction, owner: string, runId: string) {
@@ -65,18 +85,7 @@ export function createImportService(database: ReturnType<typeof createDatabase>)
   }
   const prepare = (actor: AuthenticatedOwner, raw: unknown, transaction?: AuthenticatedTransaction) => unit(actor, raw, importPrepareSchema, async (tx, input) => {
     const { manifest } = input;
-    if (manifest.parsed.blocked || input.sources.length !== manifest.sources.length) throw new SafeError('INVALID_INPUT');
-    let size = 0; const verified = [];
-    for (const source of manifest.sources) {
-      const uploads = input.sources.filter((v) => v.name === source.name);
-      if (uploads.length !== 1) throw new SafeError('INVALID_INPUT');
-      const encoded = uploads[0]!.bytesBase64; const bytes = Buffer.from(encoded, 'base64'); size += bytes.length;
-      if (size > MAX_SOURCE_ARCHIVE_BYTES || bytes.toString('base64') !== encoded || bytes.length !== source.size || sha256(bytes) !== source.sha256) throw new SafeError('INVALID_INPUT');
-      if (/\.csv$/i.test(source.name) && !isDeepStrictEqual(parseLegacyCsv(bytes), manifest.parsed)) throw new SafeError('INVALID_INPUT');
-      let text: string; try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); } catch { throw new SafeError('INVALID_INPUT'); }
-      assertRepresentableJson(text);
-      verified.push({ name: source.name, bytes, text, hash: sha256(bytes) });
-    }
+    const verified = verifyImportSources(input);
     const old = (await tx.query<Run>('SELECT id,unit_state,status FROM career.import_runs WHERE owner_id=$1 AND source_set_hash=$2 AND importer_version=$3', [actor.ownerId, manifest.sourceSetHash, IMPORTER_VERSION])).rows[0];
     const cycleConfig = { id: input.cycle.id, resetDate: input.cycle.resetDate, resetMarker: input.cycle.resetMarker, isCurrent: input.cycle.isCurrent };
     if (old) {
@@ -84,16 +93,18 @@ export function createImportService(database: ReturnType<typeof createDatabase>)
       return { runId: old.id, cycleId: old.unit_state.cycleId };
     }
     const cycle = input.cycle;
-    const existingCycle = (await tx.query<{ version: number; reset_date: unknown; reset_marker: string | null; is_current: boolean }>('SELECT version,reset_date,reset_marker,is_current FROM career.cycles WHERE owner_id=$1 AND id=$2 FOR UPDATE', [actor.ownerId, cycle.id])).rows[0];
+    const existingCycle = (await tx.query<{ version: number; reset_date: unknown; reset_marker: string | null; is_current: boolean; next_order: string }>('SELECT version,reset_date,reset_marker,is_current,next_order FROM career.cycles WHERE owner_id=$1 AND id=$2 FOR UPDATE', [actor.ownerId, cycle.id])).rows[0];
     if (existingCycle) {
       if (existingCycle.version !== cycle.expectedVersion || existingCycle.is_current !== cycle.isCurrent || !isDeepStrictEqual(existingCycle.reset_date, cycle.resetDate) || existingCycle.reset_marker !== cycle.resetMarker) throw new SafeError('CONFLICT');
+      requireCycleCounter(Number(existingCycle.next_order));
     } else {
       if (cycle.expectedVersion !== null) throw new SafeError('CONFLICT');
-      await tx.query('INSERT INTO career.cycles(id,owner_id,reset_date,reset_marker,is_current,next_order) SELECT $1,$2,$3,$4,$5,coalesce(max(cycle_order),0)+1 FROM career.applications WHERE owner_id=$2', [cycle.id, actor.ownerId, cycle.resetDate, cycle.resetMarker, cycle.isCurrent]);
+      const next = await cycleCounterFloor(tx, actor.ownerId);
+      await tx.query('INSERT INTO career.cycles(id,owner_id,reset_date,reset_marker,is_current,next_order) VALUES($1,$2,$3,$4,$5,$6)', [cycle.id, actor.ownerId, cycle.resetDate, cycle.resetMarker, cycle.isCurrent, next]);
     }
     const runId = randomUUID();
     await tx.query("INSERT INTO career.import_runs(id,owner_id,importer_version,source_set_hash,status,pending_issues,unit_state) VALUES($1,$2,$3,$4,'running',$5,$6)", [runId, actor.ownerId, IMPORTER_VERSION, manifest.sourceSetHash, [...new Set(manifest.parsed.issues.map((issue) => issue.code))], { cycleId: cycle.id, cycleConfig }]);
-    for (const file of verified) await tx.query('INSERT INTO career.source_files(owner_id,import_run_id,file_name,file_hash,original_bytes,original_text) VALUES($1,$2,$3,$4,$5,$6)', [actor.ownerId, runId, file.name, file.hash, file.bytes, file.text]);
+    for (const file of verified) await archiveSource(tx, actor.ownerId, runId, file);
     return { runId, cycleId: cycle.id };
   }, transaction);
   const preview = (actor: AuthenticatedOwner, raw: unknown, transaction?: AuthenticatedTransaction) => unit(actor, raw, refSchema, async (tx, input) => {
@@ -101,7 +112,10 @@ export function createImportService(database: ReturnType<typeof createDatabase>)
     return { diff: compareLegacyRows(file.parsed.rows, await loadImportBasis(tx, actor.ownerId)) };
   }, transaction);
   const applyApplication = (actor: AuthenticatedOwner, raw: unknown, transaction?: AuthenticatedTransaction) => unit(actor, raw, applicationSchema, async (tx, input): Promise<UnitResult> => {
-    const run = await runRow(tx, actor.ownerId, input.runId); const file = await readCsv(tx, actor.ownerId, input.runId);
+    const run = await runRow(tx, actor.ownerId, input.runId);
+    const contract = approvedContract(run.unit_state);
+    if (contract) requireHistoricalApplication(contract, input);
+    const file = await readCsv(tx, actor.ownerId, input.runId);
     const index = file.parsed.rows.findIndex((v) => v.legacyId === input.legacyId); const row = file.parsed.rows[index]; if (!row) throw new SafeError('NOT_FOUND');
     const previousUnit = (await tx.query<{ unit_result: UnitResult; resolution: { request: ApplicationInput } }>('SELECT unit_result,resolution FROM career.import_rows WHERE owner_id=$1 AND source_file_id=$2 AND row_number=$3', [actor.ownerId, file.id, index + 2])).rows[0];
     if (previousUnit) {
@@ -141,27 +155,24 @@ export function createImportService(database: ReturnType<typeof createDatabase>)
       if (input.expectedVersion !== null || input.expectedOpportunityVersion !== null || input.decisions !== null) throw new SafeError('CONFLICT');
       result = await insertApplication(tx, actor.ownerId, row, input); baseline = result.version;
     }
-    let evidenceId: string | null = null;
-    const projectableLinks = row.links.filter((link) => ['web', 'private', 'local'].includes(link.classification) && link.originalText.trim() !== '' && linkDataSchema.safeParse({ originalUrl: link.originalText, comparisonUrl: null, kind: 'legado', isLocal: link.classification === 'local', isPrivate: link.classification !== 'web' }).success);
-    const pendingIssues = file.parsed.issues.filter((v) => v.row === index + 2).map((v) => v.code);
-    if (!input.interpretation.provider || !row.jobCode.trim()) pendingIssues.push('unresolved_identity');
-    if (projectableLinks.length !== row.links.length) pendingIssues.push('unprojected_reference');
-    if (result.result === 'imported') {
-      const confirms = (!existing || existing.submission_status !== 'confirmado' && input.decisions?.status_envio === 'source') && row.submissionStatus === 'confirmado';
-      const links = projectableLinks.filter((link) => !existing || (link.originalText === row.fields.url_original ? input.decisions?.url_original : input.decisions?.links_alternativos) === 'source');
-      const { source, warning } = projectLegacySourceAttribution(row.source, input.decisions?.fonte);
-      if (warning) pendingIssues.push(warning);
-      evidenceId = await appendSourceEvidence(tx, actor.ownerId, result.applicationId, { ...row, links }, confirms, input.decisions, source);
-    }
-    for (const event of input.historicalEvents) await appendHistoricalEvent(tx, actor.ownerId, result.applicationId, event, evidenceId);
-    await tx.query(`INSERT INTO career.import_rows(owner_id,source_file_id,row_number,row_hash,original_text,legacy_id,target_application_id,result,pending_issues,applied_target_version,resolution,unit_result)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [actor.ownerId, file.id, index + 2, row.rawRowHash, row.raw, row.legacyId, result.applicationId, result.result, pendingIssues, baseline, { request: input, appliedInterpretation: result.result === 'skipped' ? prior!.resolution.appliedInterpretation : input.interpretation }, result]);
+    await recordApplication(tx, actor.ownerId, file.id, index + 2, row, file.parsed.issues.filter((issue) => issue.row === index + 2).map((issue) => issue.code), input, result, baseline, prior?.resolution.appliedInterpretation, existing?.submission_status);
     const retainedOrder = existing ? (existing.cycle_order === null ? null : Number(existing.cycle_order)) : row.cycleOrder;
-    if (retainedOrder !== null) await tx.query('UPDATE career.cycles SET next_order=$3,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2 AND next_order<$3', [actor.ownerId, run.unit_state.cycleId, retainedOrder + 1]);
+    if (retainedOrder !== null) {
+      const cycle = (await tx.query<{ next_order: string }>('SELECT next_order FROM career.cycles WHERE owner_id=$1 AND id=$2 FOR UPDATE', [actor.ownerId, run.unit_state.cycleId])).rows[0]!;
+      const current = Number(cycle.next_order);
+      const next = requireCycleCounter(current, [retainedOrder]);
+      if (next > current) await tx.query('UPDATE career.cycles SET next_order=$3,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2', [actor.ownerId, run.unit_state.cycleId, next]);
+    }
     return result;
   }, transaction);
   const applyReview = (actor: AuthenticatedOwner, raw: unknown, transaction?: AuthenticatedTransaction) => unit(actor, raw, reviewSchema, async (tx, input): Promise<ReviewResult> => {
     const run = await runRow(tx, actor.ownerId, input.runId); const requestHash = canonicalRequestHash(input);
+    const contract = approvedContract(run.unit_state);
+    if (contract) {
+      const receipts = await loadHistoricalReceipts(tx, actor.ownerId, run.id, contract);
+      const expected = await historicalReviewHash(tx, actor.ownerId, run.id, contract, receipts);
+      if (expected !== requestHash) throw new SafeError('IDEMPOTENCY_CONFLICT');
+    }
     if (run.unit_state.review) {
       if (run.unit_state.review.requestHash !== requestHash) throw new SafeError('IDEMPOTENCY_CONFLICT'); return run.unit_state.review.result;
     }
@@ -202,6 +213,11 @@ export function createImportService(database: ReturnType<typeof createDatabase>)
   }, transaction);
   const complete = (actor: AuthenticatedOwner, raw: unknown, transaction?: AuthenticatedTransaction) => unit(actor, raw, refSchema.extend({ reviewRequired: z.boolean() }), async (tx, input) => {
     const run = await runRow(tx, actor.ownerId, input.runId);
+    const contract = approvedContract(run.unit_state);
+    if (contract) {
+      if (!input.reviewRequired || !run.unit_state.review) throw new SafeError('CONFLICT');
+      await verifyHistoricalProgress(tx, actor.ownerId, run.id, run.status, run.unit_state, contract);
+    }
     if (run.unit_state.completed) {
       if (run.unit_state.completed.reviewRequired !== input.reviewRequired) throw new SafeError('IDEMPOTENCY_CONFLICT'); return run.unit_state.completed;
     }
@@ -212,7 +228,62 @@ export function createImportService(database: ReturnType<typeof createDatabase>)
     await tx.query("UPDATE career.import_runs SET status='completed',unit_state=$3,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2", [actor.ownerId, run.id, { ...run.unit_state, completed: result }]);
     return result;
   }, transaction);
-  return { prepare, preview, applyApplication, applyReview, complete };
+  const applyCsv = (actor: AuthenticatedOwner, raw: unknown, transaction?: AuthenticatedTransaction) => unit(actor, raw, csvConfirmationSchema, async (tx, input): Promise<CsvReceipt> => {
+    const { bytes, parsed } = readCsvUpload(input);
+    const plan = await planCsvUpload(tx, actor.ownerId, input.fileName, parsed);
+    if (plan.confirmation !== input.confirmation) throw new SafeError('CONFLICT');
+
+    const owner = actor.ownerId;
+    const runId = randomUUID();
+    const sourceSetHash = sha256('csv_upload/' + input.confirmation);
+    const receipt = { runId, imported: plan.totals.eligible, unchanged: plan.totals.unchanged, review: plan.totals.review };
+    await tx.query("INSERT INTO career.import_runs(id,owner_id,importer_version,source_set_hash,status,pending_issues,unit_state) VALUES($1,$2,$3,$4,'completed',$5,$6)", [
+      runId, owner, IMPORTER_VERSION, sourceSetHash, [...new Set(plan.rows.flatMap((row) => row.issues))], { scope: 'csv_upload', receipt },
+    ]);
+    const sourceFileId = await archiveSource(tx, owner, runId, {
+      name: input.fileName, bytes, hash: parsed.sourceHash,
+      text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+    });
+    for (const candidate of plan.rows) {
+      if (candidate.status !== 'eligible') continue;
+      const row = parsed.rows[candidate.number - 2]!;
+      const application: ApplicationInput = {
+        runId, legacyId: row.legacyId, expectedVersion: null, expectedOpportunityVersion: null,
+        interpretation: { track: null, applicationInstance: 'initial', cycleRelation: 'unknown', kind: 'desconhecido', provider: null, tenant: null },
+        decisions: null, historicalEvents: [], affectedBatches: [],
+      };
+      const result = await insertApplication(tx, owner, row, application);
+      await recordApplication(tx, owner, sourceFileId, candidate.number, row, candidate.issues, application, result, result.version);
+    }
+    return receipt;
+  }, transaction);
+  return { prepare, preview, applyApplication, applyReview, complete, applyCsv };
+}
+
+async function archiveSource(tx: AuthenticatedTransaction, owner: string, runId: string, file: { name: string; bytes: Buffer; hash: string; text: string }) {
+  const result = await tx.query<{ id: string }>('INSERT INTO career.source_files(owner_id,import_run_id,file_name,file_hash,original_bytes,original_text) VALUES($1,$2,$3,$4,$5,$6) RETURNING id', [owner, runId, file.name, file.hash, file.bytes, file.text]);
+  return result.rows[0]!.id;
+}
+
+async function recordApplication(
+  tx: AuthenticatedTransaction, owner: string, sourceFileId: string, number: number, row: LegacyRow, issues: string[],
+  input: ApplicationInput, result: UnitResult, baseline: number, priorInterpretation?: Record<string, unknown>, currentSubmissionStatus?: string,
+) {
+  let evidenceId: string | null = null;
+  const { links: projectableLinks, hasUnprojected } = projectableLegacyLinks(row.links);
+  const pendingIssues = [...issues];
+  if (!input.interpretation.provider || !row.jobCode.trim()) pendingIssues.push('unresolved_identity');
+  if (hasUnprojected && !pendingIssues.includes('unprojected_reference')) pendingIssues.push('unprojected_reference');
+  if (result.result === 'imported') {
+    const confirms = (currentSubmissionStatus === undefined || currentSubmissionStatus !== 'confirmado' && input.decisions?.status_envio === 'source') && row.submissionStatus === 'confirmado';
+    const links = projectableLinks.filter((link) => currentSubmissionStatus === undefined || (link.originalText === row.fields.url_original ? input.decisions?.url_original : input.decisions?.links_alternativos) === 'source');
+    const { source, warning } = projectLegacySourceAttribution(row.source, input.decisions?.fonte);
+    if (warning && !pendingIssues.includes(warning)) pendingIssues.push(warning);
+    evidenceId = await appendSourceEvidence(tx, owner, result.applicationId, { ...row, links }, confirms, input.decisions, source);
+  }
+  for (const event of input.historicalEvents) await appendHistoricalEvent(tx, owner, result.applicationId, event, evidenceId);
+  await tx.query(`INSERT INTO career.import_rows(owner_id,source_file_id,row_number,row_hash,original_text,legacy_id,target_application_id,result,pending_issues,applied_target_version,resolution,unit_result)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, [owner, sourceFileId, number, row.rawRowHash, row.raw, row.legacyId, result.applicationId, result.result, pendingIssues, baseline, { request: input, appliedInterpretation: result.result === 'skipped' ? priorInterpretation! : input.interpretation }, result]);
 }
 
 async function insertApplication(tx: AuthenticatedTransaction, owner: string, row: LegacyRow, input: ApplicationInput): Promise<UnitResult> {

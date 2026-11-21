@@ -1,18 +1,22 @@
 import type { AuthController } from '../../lib/auth';
 import { ApiError } from '../../lib/api';
+import { csvPreviewSchema, csvReceiptSchema, type CsvReceipt, type CsvUpload } from '../../../shared/csv-upload';
 
 export const TRANSFER_LIMIT = 4_000_000;
 export type ImportUnit = { unit: 'prepare' | 'application' | 'review' | 'complete'; data: Record<string, unknown> };
+type CsvUnit = { unit: 'csv'; data: CsvUpload & { confirmation: string } };
+type PendingUnit = ImportUnit | CsvUnit;
+
 export function createTransferClient(auth: AuthController, transport: typeof fetch = fetch) {
   let period = 0; let disposed = false; let latestExport = 0;
   let importBusy = false;
-  let state = { pendingImport: null as { unit: ImportUnit; key: string } | null, importStatus: 'idle' as 'idle' | 'saving' | 'uncertain' | 'saved', receiptId: 0, receivedAt: null as string | null, confirmedAt: null as string | null, format: null as 'csv' | 'json' | null, status: 'idle' as 'idle' | 'receiving' | 'received' | 'confirmed' | 'error' };
+  let state = { pendingImport: null as { unit: PendingUnit; key: string } | null, csvReceipt: null as CsvReceipt | null, importStatus: 'idle' as 'idle' | 'saving' | 'uncertain' | 'saved', receiptId: 0, receivedAt: null as string | null, confirmedAt: null as string | null, format: null as 'csv' | 'json' | null, status: 'idle' as 'idle' | 'receiving' | 'received' | 'confirmed' | 'error' };
   const listeners = new Set<() => void>();
   const publish = (patch: Partial<typeof state>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   let generation = auth.getSnapshot().generation;
   const disconnect = auth.subscribe(() => {
     const next = auth.getSnapshot();
-    if (next.generation !== generation) publish({ pendingImport: null, importStatus: 'idle' });
+    if (next.generation !== generation) publish({ pendingImport: null, importStatus: 'idle', csvReceipt: null });
     else if (next.status !== 'authenticated' && state.pendingImport) publish({ importStatus: 'uncertain' });
     if (next.generation !== generation || next.status !== 'authenticated') { period++; latestExport++; publish({ receiptId: 0, receivedAt: null, confirmedAt: null, format: null, status: 'idle' }); }
     generation = next.generation;
@@ -53,9 +57,28 @@ export function createTransferClient(auth: AuthController, transport: typeof fet
     try {
       const result = await json('/api/v1/imports/apply', pending.unit, pending.key);
       if (disposed || generation !== ownerGeneration || epoch !== period || auth.getSnapshot().status !== 'authenticated') throw new ApiError(0);
-      publish({ pendingImport: null, importStatus: 'saved' }); return result;
-    } catch (error) { if (!disposed && generation === ownerGeneration) publish({ importStatus: 'uncertain' }); throw error; }
+      const receipt = pending.unit.unit === 'csv' ? csvReceiptSchema.safeParse(result) : null;
+      if (receipt && !receipt.success) throw new ApiError(503);
+      publish({ pendingImport: null, importStatus: 'saved', ...(receipt ? { csvReceipt: receipt.data } : {}) });
+      return result;
+    } catch (error) {
+      if (!disposed && generation === ownerGeneration) {
+        const rejectedCsv = pending.unit.unit === 'csv' && error instanceof ApiError && [400, 403, 409, 413].includes(error.status);
+        publish(rejectedCsv ? { pendingImport: null, importStatus: 'idle' } : { importStatus: 'uncertain' });
+      }
+      throw error;
+    }
     finally { importBusy = false; }
+  };
+  const importUnit = async (unit: PendingUnit, key: string) => {
+    if (state.pendingImport || importBusy || disposed || auth.getSnapshot().status !== 'authenticated') throw new ApiError(409);
+    const serialized = JSON.stringify(unit);
+    if (new TextEncoder().encode(serialized).byteLength > TRANSFER_LIMIT) throw new ApiError(413);
+    publish({
+      pendingImport: { unit: JSON.parse(serialized) as PendingUnit, key },
+      ...(unit.unit === 'csv' ? { csvReceipt: null } : {}),
+    });
+    return retryImport();
   };
   return {
     getSnapshot: () => state,
@@ -75,14 +98,18 @@ export function createTransferClient(auth: AuthController, transport: typeof fet
     previewCsv: (bytesBase64: string) => json('/api/v1/imports/preview', { bytesBase64 }),
     previewRun: (runId: string) => json('/api/v1/imports/preview', { runId }),
     previewRestore: (snapshot: unknown) => json('/api/v1/restores/preview', { snapshot }),
-    importUnit: async (unit: ImportUnit, key: string) => {
-      if (state.pendingImport || importBusy || disposed || auth.getSnapshot().status !== 'authenticated') throw new ApiError(409);
-      const serialized = JSON.stringify(unit);
-      if (new TextEncoder().encode(serialized).byteLength > TRANSFER_LIMIT) throw new ApiError(413);
-      publish({ pendingImport: { unit: JSON.parse(serialized) as ImportUnit, key } }); return retryImport();
+    historicalSnapshot: () => json('/api/v1/exports?format=json', undefined),
+    previewHistorical: (bytesBase64: string) => json('/api/v1/imports/preview', { format: 'historical_package', bytesBase64 }),
+    applyHistorical: (unit: ImportUnit, key: string) => json('/api/v1/imports/apply', unit, key),
+    previewCsvUpload: async (upload: CsvUpload) => {
+      const result = csvPreviewSchema.safeParse(await json('/api/v1/imports/preview', { format: 'csv_upload', ...upload }));
+      if (!result.success) throw new ApiError(503);
+      return result.data;
     },
+    importUnit: (unit: ImportUnit, key: string) => importUnit(unit, key),
+    confirmCsvUpload: (data: CsvUnit['data']) => importUnit({ unit: 'csv', data }, crypto.randomUUID()),
     retryImport,
-    dispose: () => { disposed = true; period++; latestExport++; disconnect(); publish({ pendingImport: null, importStatus: 'idle', receiptId: 0, receivedAt: null, confirmedAt: null, format: null, status: 'idle' }); listeners.clear(); },
+    dispose: () => { disposed = true; period++; latestExport++; disconnect(); publish({ pendingImport: null, importStatus: 'idle', csvReceipt: null, receiptId: 0, receivedAt: null, confirmedAt: null, format: null, status: 'idle' }); listeners.clear(); },
   };
 }
 export function downloadText(text: string, fileName: string, type: string) {

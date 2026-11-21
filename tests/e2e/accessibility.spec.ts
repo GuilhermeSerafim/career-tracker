@@ -12,7 +12,7 @@ for (const width of [320, 375, 768, 1440]) test(`acessibilidade: ${width}px, tec
   await page.setViewportSize({ width, height: 900 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await syntheticBrowser(page, api);
-  for (const route of ['/', '/vagas/nova', '/analises', '/revisoes', '/configuracoes']) {
+  for (const route of ['/', '/vagas/nova', '/vagas/importar', '/analises', '/revisoes', '/configuracoes']) {
     await page.goto(route);
     await expect(page.getByRole('link', { name: 'Hoje', exact: true })).toBeVisible();
     await expect(page.locator('main h1')).toBeVisible();

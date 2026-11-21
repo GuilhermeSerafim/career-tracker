@@ -62,6 +62,16 @@ export async function allocationPlan(context: MutationContext): Promise<Allocati
 export function allocationRefs(plan: AllocationPlan) {
   return [...(plan.batch ? [{ table: 'batches' as const, id: plan.batch }] : []), { table: 'cycles' as const, id: plan.cycle }];
 }
+export function requireCycleCounter(next: number, preserved: number[] = []) {
+  const counter = nextStableOrder(next, preserved);
+  if (counter === null) throw new SafeError('CYCLE_CONFIGURATION');
+  return counter;
+}
+export async function cycleCounterFloor(transaction: Transaction, owner: string, next = 1) {
+  const result = await transaction.query<{ highest: string | null }>('SELECT max(cycle_order) AS highest FROM career.applications WHERE owner_id=$1', [owner]);
+  const highest = result.rows[0]!.highest;
+  return requireCycleCounter(next, highest === null ? [] : [Number(highest)]);
+}
 export async function allocateApplication(context: MutationContext, id: string, prepared?: AllocationPlan) {
   const row = await applicationProjection(context.transaction, context.ownerId, id);
   if (!allocationEligible(row)) return;
@@ -73,8 +83,9 @@ export async function allocateApplication(context: MutationContext, id: string, 
   // Nunca adquirir um lote recém-descoberto depois do ciclo: recomeçar a operação.
   if (checked.cycle !== plan.cycle || checked.batch !== plan.batch) throw new SafeError('CONFLICT');
   const cycle = (await context.transaction.query<{ next_order: string }>('SELECT next_order FROM career.cycles WHERE owner_id=$1 AND id=$2', [context.ownerId, plan.cycle])).rows[0]!;
-  const orders = (await context.transaction.query<{ cycle_order: string }>('SELECT cycle_order FROM career.applications WHERE owner_id=$1 AND cycle_order IS NOT NULL', [context.ownerId])).rows.map((value) => Number(value.cycle_order));
-  const order = row.cycleOrder ?? nextStableOrder(Number(cycle.next_order), orders);
+  const current = Number(cycle.next_order);
+  const order = row.cycleOrder ?? await cycleCounterFloor(context.transaction, context.ownerId, current);
+  const next = requireCycleCounter(current, [order]);
   let batch = plan.batch;
   if (!batch) {
     batch = randomUUID();
@@ -86,5 +97,5 @@ export async function allocateApplication(context: MutationContext, id: string, 
   await context.transaction.query('INSERT INTO career.batch_members(owner_id,batch_id,application_id,captured_order) VALUES($1,$2,$3,$4)', [context.ownerId, batch, id, order]);
   const count = (await context.transaction.query<{ n: number }>("SELECT count(*)::int AS n FROM career.batch_members WHERE owner_id=$1 AND batch_id=$2 AND eligible AND allocation='counted'", [context.ownerId, batch])).rows[0]!.n;
   await context.transaction.query('UPDATE career.batches SET status=$3,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2', [context.ownerId, batch, batchState(count, target)]);
-  await context.transaction.query('UPDATE career.cycles SET next_order=$3,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2', [context.ownerId, plan.cycle, Math.max(order + 1, Number(cycle.next_order))]);
+  await context.transaction.query('UPDATE career.cycles SET next_order=$3,version=version+1,updated_at=now() WHERE owner_id=$1 AND id=$2', [context.ownerId, plan.cycle, next]);
 }

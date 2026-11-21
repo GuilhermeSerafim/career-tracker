@@ -16,6 +16,7 @@ import { day, unknownDate } from '../fixtures/career';
 import { applicationResultSchema } from '../../shared/application-results';
 import { buildReviewSnapshot } from '../../domain/cycles';
 import { loadReviewProjection } from '../../server/repositories/reviews';
+import { readSnapshot } from '../../server/repositories/transfers';
 import { reviewSnapshotSchema } from '../../shared/transfer';
 
 
@@ -358,6 +359,31 @@ describe('candidaturas via login restrito em duas conexões', () => {
     const intercepted = intercept(first, (sql) => sql.startsWith('UPDATE career.cycles SET next_order'), async () => { throw new Error('Falha após contador.'); });
     await expect(call(command, createApplicationService(intercepted))).rejects.toMatchObject({ status: 503 });
     expect(await inventory()).toEqual(before);
+  });
+  emptyIt('preserva a última alocação exportável e reverte a seguinte', async () => {
+    const old = await application(save());
+    await first.transaction(actor, tx => tx.query('UPDATE career.applications SET cycle_order=9007199254740989 WHERE id=$1', [old.id]));
+    await reviewCall({ operation: 'start_cycle', clientId: randomUUID(), resetDate: unknownDate, resetMarker: null });
+    const eligible = () => { const command = save(); command.data.cycleRelation = 'after_reset'; return command; };
+    const last = await application(eligible());
+    expect(last.cycleOrder).toBe(9007199254740990);
+    const snapshot = () => first.transaction(actor, tx => readSnapshot(tx, owner));
+    const before = await snapshot();
+    await expect(call(eligible())).rejects.toMatchObject({ code: 'CYCLE_CONFIGURATION' });
+    expect((await snapshot()).entities).toEqual(before.entities);
+    const retained = await application({ operation: 'update_application', application: await appRef(old.id), changes: {},
+      reconciliation: { submittedDate: unknownDate, cycleRelation: 'after_reset' }, evidence: evidence(), affectedBatches: [] });
+    expect(retained).toMatchObject({ id: old.id, cycleOrder: 9007199254740989 });
+    expect((await snapshot()).entities.find(row => row.table === 'cycles')?.data).toMatchObject({ nextOrder: 9007199254740991 });
+  });
+  emptyIt('preserva a ordem legada sem sucessor e rejeita a criação do ciclo', async () => {
+    const old = await application(save());
+    await first.transaction(actor, tx => tx.query('UPDATE career.applications SET cycle_order=9007199254740991 WHERE id=$1', [old.id]));
+    await expect(reviewCall({ operation: 'start_cycle', clientId: randomUUID(), resetDate: unknownDate, resetMarker: null }))
+      .rejects.toMatchObject({ code: 'CYCLE_CONFIGURATION' });
+    const snapshot = await first.transaction(actor, tx => readSnapshot(tx, owner));
+    expect(snapshot.entities.some(row => row.table === 'cycles')).toBe(false);
+    expect(snapshot.entities.find(row => row.table === 'applications')?.data).toMatchObject({ id: old.id, cycleOrder: 9007199254740991 });
   });
   it('não escolhe ciclo sem marcador explícito e avança acima de ordem preservada', async () => {
     const current = (await db.query('SELECT id FROM career.cycles WHERE owner_id=$1 AND is_current', [owner])).rows[0].id;

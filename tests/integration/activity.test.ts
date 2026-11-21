@@ -46,6 +46,10 @@ describe('histórico, contatos e próximas ações pelo login restrito', () => {
   const app = async (stage?: string) => (await applications(actor, { idempotencyKey: randomUUID(), command: save(stage) })).body.application!;
   const ref = (value: { id: string; version: number }) => ({ id: value.id, expectedVersion: value.version });
   const events = async (id: string) => (await db.query('SELECT * FROM career.events WHERE application_id=$1 ORDER BY created_at,id', [id])).rows;
+  async function captureDatabaseTime() {
+    const result = await db.query<{ instant: string }>(`SELECT to_char(statement_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS instant`);
+    return result.rows[0]!.instant;
+  }
 
   it('registra avaliação retrospectiva sem inventar data, aprovação ou outro envio; retry entre atores é durável', async () => {
     const a = await app(); const command = { operation: 'record_event', clientId: randomUUID(), application: ref(a), data: eventData() };
@@ -84,7 +88,7 @@ describe('histórico, contatos e próximas ações pelo login restrito', () => {
     expect((await events(a.id)).map((e) => e.kind).sort()).toEqual(['entrevista', 'envio_confirmado', 'rejeicao']);
     expect((await db.query('SELECT stage,submission_status,cycle_relation FROM career.applications WHERE id=$1', [a.id])).rows[0]).toEqual({ stage: 'rejeicao', submission_status: 'confirmado', cycle_relation: 'before_reset' });
     const history = await first.transaction(actor, (tx) => listApplicationEvents(tx, owner, a.id));
-    const metrics = buildAnalytics([analyticsRowSchema.strip().parse({ ...a, stage: 'rejeicao', company: 'Empresa fictícia', title: 'Engenharia', seniority: null, modality: null, batchIds: [] })], history.map((event) => analyticsEventSchema.strip().parse(event)), { operation: 'metrics', period: { from: '2026-11-16', to: '2026-11-16' }, population: 'confirmed', dimension: 'stack', submissionScope: 'all_dates', dailyGoal: 1, asOf: '2026-11-20T12:00:00Z' });
+    const metrics = buildAnalytics([analyticsRowSchema.strip().parse({ ...a, stage: 'rejeicao', company: 'Empresa fictícia', title: 'Engenharia', seniority: null, modality: null, batchIds: [] })], history.map((event) => analyticsEventSchema.strip().parse(event)), { operation: 'metrics', period: { from: '2026-11-16', to: '2026-11-16' }, population: 'confirmed', dimension: 'stack', submissionScope: 'all_dates', dailyGoal: 1, asOf: await captureDatabaseTime() });
     expect(metrics.conversions.interview).toEqual({ numerator: 1, denominator: 1, ratio: 1, applicationIds: [a.id] });
     expect(metrics.completed.interview.count).toBe(0); expect(metrics.conversions.response.numerator).toBe(0); expect(metrics.comparison.actual).toBe(0);
   });
@@ -245,7 +249,7 @@ describe('histórico, contatos e próximas ações pelo login restrito', () => {
     expect((await call(command, createActivityService(second), otherActor)).body.event?.id).toBe(corrected.body.event?.id);
     const history = await first.transaction(actor, (tx) => listApplicationEvents(tx, owner, canonical.id));
     const analytical = (a: typeof alias, changes = {}) => analyticsRowSchema.strip().parse({ ...a, company: 'Empresa fictícia', title: 'Engenharia', seniority: null, modality: null, batchIds: [], ...changes });
-    const metrics = buildAnalytics([analytical(alias, { canonicalApplicationId: canonical.id, countingEligible: false }), analytical(canonical)], history.map((e) => analyticsEventSchema.strip().parse(e)), { operation: 'metrics', period: { from: '2026-11-16', to: '2026-11-16' }, population: 'confirmed', dimension: 'stack', submissionScope: 'all_dates', dailyGoal: 1, asOf: '2026-11-20T12:00:00Z' });
+    const metrics = buildAnalytics([analytical(alias, { canonicalApplicationId: canonical.id, countingEligible: false }), analytical(canonical)], history.map((e) => analyticsEventSchema.strip().parse(e)), { operation: 'metrics', period: { from: '2026-11-16', to: '2026-11-16' }, population: 'confirmed', dimension: 'stack', submissionScope: 'all_dates', dailyGoal: 1, asOf: await captureDatabaseTime() });
     expect(metrics.conversions.interview).toEqual({ numerator: 1, denominator: 1, ratio: 1, applicationIds: [canonical.id] });
     expect(metrics.conversions.assessment.numerator).toBe(0);
     expect(metrics.supersededEventIds).toContain(original.id);

@@ -1,4 +1,4 @@
-import type { ApplicationMetricsRow } from '../shared/model';
+import { assignableCycleOrderSchema, orderSchema, type ApplicationMetricsRow } from '../shared/model.js';
 import type { AnalyticsEvent, AnalyticsRow } from '../shared/analytics';
 import { buildAnalytics, canonicalAttribution, eventHistory } from './metrics.js';
 import { instantNanoseconds, toLocalDay } from './dates.js';
@@ -82,7 +82,12 @@ export function laterReviewEvents(rows: AnalyticsRow[], events: AnalyticsEvent[]
 export function allocationEligible(row: ApplicationMetricsRow): boolean {
   return row.submissionStatus === 'confirmado' && row.countingEligible && row.canonicalApplicationId === null && row.cycleRelation === 'after_reset';
 }
-export function nextStableOrder(next: number, preserved: number[]): number {
-  return preserved.reduce((value, order) => Math.max(value, order + 1), next);
+export function nextStableOrder(next: number, preserved: number[]): number | null {
+  if (!orderSchema.safeParse(next).success) return null;
+  for (const order of preserved) {
+    if (!assignableCycleOrderSchema.safeParse(order).success) return null;
+    next = Math.max(next, order + 1);
+  }
+  return next;
 }
 export function batchState(validMembers: number, target = 30): 'open' | 'pending' { return validMembers >= target ? 'pending' : 'open'; }

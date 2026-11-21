@@ -77,3 +77,27 @@ O formato local aceita até 100.000 entidades e 256 MiB de JSON canônico, com l
 Base64, texto e cópias de auditoria podem fazer uma seleção de origem menor que 50 MiB exceder o orçamento agregado. A operação então falha explicitamente; não trunca, elimina auditorias ou oferece uma cópia parcial como completa. A ferramenta local materializa dados e representações de validação em memória: reserve memória e tempo compatíveis e faça nova verificação com um destino sintético antes de aumentar limites.
 
 Esses limites locais não prometem transportar o mesmo arquivo por uma função hospedada. A [documentação de limites das Vercel Functions](https://vercel.com/docs/functions/limitations) informa limite de 4,5 MB para corpo de requisição/resposta, sujeito a verificação na configuração efetiva antes da publicação. A recuperação completa é executada localmente com conexão PostgreSQL privada. Os testes desta entrega usam somente dois bancos sintéticos locais; não comprovam recuperação hospedada, restauro de dados reais, corte da fonte operacional ou backup automático do provedor.
+
+## Pacote histórico pela tela de Vagas
+
+Em **Vagas → Importar CSV → Importar pacote histórico**, selecione um JSON UTF-8 preparado para a sua conta. Confira o SHA-256, as contagens e os avisos. Marque a autorização e confirme **Aplicar pacote histórico**. A primeira aplicação exige uma base de trabalho vazia. As configurações do proprietário podem existir. Se a conexão cair, aguarde e selecione o mesmo arquivo, byte por byte, na mesma conta. A tela usa a sessão atual. Ao concluir, use **Baixar JSON completo** e guarde a cópia para a conferência independente e o ensaio de restauração. Se a exportação passar de 4 MB, continue pelo procedimento local privado.
+
+### Contrato do preparador v1
+
+O JSON tem exatamente os campos abaixo. O validador executável está em `server/services/historical-package.ts`. O limite do arquivo é 2.000.000 bytes e a revisão original exige 30 membros. O limite de candidaturas é 150.
+
+| Campo | Conteúdo |
+| --- | --- |
+| `format` | Literal `career-tracker-historical-import/1`. |
+| `operationId`, `ownerId` | UUID da operação criada uma vez e UUID do proprietário de destino. |
+| `sourceSetHash` | SHA-256 do conjunto do manifesto v2 preparado por `scripts/import-legacy.ts`, idêntico a `prepare.manifest.sourceSetHash`. |
+| `capturedAt` | Instante ISO fixado na preparação deste arquivo. |
+| `prepare` | Corpo da unidade prepare com `manifest`, `sources` (nome e bytes em base64) e `cycle`. O servidor verifica cada hash, os bytes e a projeção do CSV. O ciclo inicial tem `expectedVersion: null`. |
+| `applications` | Um corpo de aplicação por ID legado do CSV, em ordem de execução, sem `runId`. Use o contrato de `applicationSchema` em `server/services/imports.ts`. Versões e decisões iniciais são nulas e os lotes afetados estão vazios. Os `historicalEvents` contêm eventos revisados com UUIDs de cliente únicos no pacote. |
+| `review` | `batchNumber`, `members` em ordem original (cada item tem `legacyId` e `capturedOrder`), `markdownFile`, `closedAt`, `historicalClosedDate`, `documentedUpdatedDate`, `snapshotTimeMeaning`, `snapshot` e `pendingIssues`. O Markdown tem até 50.000 caracteres. |
+| `review.snapshot` | Somente `schemaVersion: 1`, `period`, `eventIds` e `metrics`. Em v1, `eventIds` contém UUIDs de cliente dos eventos históricos explicitamente selecionados dentro da população. Cada evento histórico preparado em candidatura externa representa um resultado externo desta revisão, preservada a ordem do arquivo. Use este formato somente se essa interpretação foi revisada. |
+| `complete` | Objeto exato `{"reviewRequired":true}`. |
+
+A tela resolve UUIDs persistidos e versões pelos recibos e pela exportação intermediária. Para `import_capture`, forneça `closedAt: null` e a precisão histórica documentada, inclusive desconhecida. A captura usa `capturedAt`. Para `historical_instant`, forneça o instante histórico exato em `closedAt`. IDs de execução, IDs persistidos de membros e IDs persistidos de eventos são gerados no destino. Guarde o arquivo preparado sem reformatar nem alterar uma data para retomar a mesma operação.
+
+A preparação registra no destino as interpretações aprovadas por candidatura e o modelo da revisão. Mesmo pelo importador de unidades em Configurações, uma execução vinculada só aceita uma candidatura que corresponda ao pacote e a revisão formada pelos recibos dessa execução. A conclusão exige essa revisão e a contagem integral de candidaturas. Ao reabrir o arquivo, o servidor confere os recibos anteriores antes de indicar que a operação terminou.

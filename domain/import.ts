@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { parse } from 'csv-parse/sync';
 import { z } from 'zod';
-import { dateValueSchema, isCalendarDay, positiveVersionSchema, sha256Schema, shortTextSchema, submissionStatusSchema, type DateValue } from '../shared/model.js';
+import { assignableCycleOrderSchema, dateValueSchema, isCalendarDay, linkDataSchema, positiveVersionSchema, sha256Schema, shortTextSchema, submissionStatusSchema, type DateValue } from '../shared/model.js';
 import { MAX_SOURCE_ARCHIVE_BYTES } from '../shared/transfer.js';
 
 export const IMPORTER_VERSION = 'legacy-preview/2' as const;
@@ -21,7 +21,7 @@ export const legacyRowSchema = z.strictObject({
   legacyPlatform: z.string(), submissionStatus: submissionStatusSchema.nullable(), submittedDate: dateValueSchema,
   legacyRegisteredDate: dateValueSchema, stage: z.literal('desconhecida'), stageNarrative: z.string(),
   discoveryChannel: z.null(), submissionPlatform: z.null(), tenant: z.null(), cycleRelation: z.literal('unknown'),
-  legacyResumeText: z.string(), cycleOrder: z.number().int().positive().nullable(), evidence: z.string(), source: z.string(),
+  legacyResumeText: z.string(), cycleOrder: assignableCycleOrderSchema.nullable(), evidence: z.string(), source: z.string(),
   links: z.array(referenceSchema),
   provenance: z.record(z.enum(LEGACY_HEADER), z.strictObject({ column: z.enum(LEGACY_HEADER), rawRowHash: sha256Schema, originalText: z.string() })),
 });
@@ -36,7 +36,7 @@ class LegacyInputError extends Error {
 }
 
 /** Parser limitado reutilizável: não materializa projeções nem aceita truncamento. */
-export function readLegacyCsvRecords(bytes: Uint8Array): CsvRecord[] {
+export function readLegacyCsvRecords(bytes: Uint8Array, maxRows = MAX_LEGACY_ROWS): CsvRecord[] {
   if (bytes.byteLength > MAX_SOURCE_ARCHIVE_BYTES) throw new LegacyInputError('source_too_large');
   try { new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
   catch { throw new LegacyInputError('invalid_utf8'); }
@@ -53,7 +53,7 @@ export function readLegacyCsvRecords(bytes: Uint8Array): CsvRecord[] {
       return value;
     },
     on_record: (record, context) => {
-      if (context.records > MAX_LEGACY_ROWS + 1) throw new LegacyInputError('row_limit');
+      if (context.records > maxRows + 1) throw new LegacyInputError('row_limit');
       if (buffer.subarray(start, context.bytes).toString('utf8').length > MAX_LEGACY_RAW_RECORD_CHARS) throw new LegacyInputError('record_too_large');
       start = context.bytes;
       return record;
@@ -76,7 +76,7 @@ export function classifyLegacyReference(originalText: string): z.infer<typeof re
 }
 
 /** O parser define fronteiras CSV; hashes usam fatias dos bytes originais, inclusive CRLF. */
-export function parseLegacyCsv(input: string | Uint8Array): LegacyParse {
+export function parseLegacyCsv(input: string | Uint8Array, maxRows = MAX_LEGACY_ROWS): LegacyParse {
   const result: LegacyParse = { sourceHash: sha256(input), rows: [], issues: [], blocked: false };
   const issue = (code: string, severity: ImportIssue['severity'], row: number | null = null, column: LegacyColumn | null = null) => {
     result.issues.push({ code, severity, row, column });
@@ -85,7 +85,7 @@ export function parseLegacyCsv(input: string | Uint8Array): LegacyParse {
   if ((typeof input === 'string' ? Buffer.byteLength(input) : input.byteLength) > MAX_SOURCE_ARCHIVE_BYTES) { issue('source_too_large', 'error'); return result; }
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
   let records: CsvRecord[];
-  try { records = readLegacyCsvRecords(bytes); }
+  try { records = readLegacyCsvRecords(bytes, maxRows); }
   catch (error) {
     issue(error instanceof LegacyInputError ? error.code : (error instanceof Error && 'code' in error && error.code === 'CSV_MAX_RECORD_SIZE' ? 'record_too_large' : 'invalid_csv'), 'error');
     return result;
@@ -115,7 +115,7 @@ export function parseLegacyCsv(input: string | Uint8Array): LegacyParse {
     let cycleOrder: number | null = null;
     if (fields.ordem_ciclo !== '') {
       const number = Number(fields.ordem_ciclo);
-      if (!/^[1-9]\d*$/.test(fields.ordem_ciclo) || !Number.isSafeInteger(number)) issue('invalid_order', 'error', rowNumber, 'ordem_ciclo');
+      if (!/^[1-9]\d*$/.test(fields.ordem_ciclo) || !assignableCycleOrderSchema.safeParse(number).success) issue('invalid_order', 'error', rowNumber, 'ordem_ciclo');
       else {
         cycleOrder = number;
         if (orders.has(number)) issue('duplicate_order', 'error', rowNumber, 'ordem_ciclo');
@@ -144,6 +144,16 @@ export function parseLegacyCsv(input: string | Uint8Array): LegacyParse {
     start = record.info.bytes;
   }
   return legacyParseSchema.parse(result);
+}
+
+export function projectableLegacyLinks(references: LegacyRow['links']) {
+  const distinct = new Map(references.map((link) => [link.originalText, link]));
+  const links = [...distinct.values()].filter((link) => ['web', 'private', 'local'].includes(link.classification) && link.originalText.trim() !== ''
+    && linkDataSchema.safeParse({
+      originalUrl: link.originalText, comparisonUrl: null, kind: 'legado',
+      isLocal: link.classification === 'local', isPrivate: link.classification !== 'web',
+    }).success);
+  return { links, hasUnprojected: links.length !== distinct.size };
 }
 
 export const UNPROJECTED_SOURCE_ATTRIBUTION = 'unprojected_source_attribution';

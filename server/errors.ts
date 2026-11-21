@@ -1,7 +1,7 @@
 const errors = {
   FIXTURE_CHANGED: [409, 'O estado da verificação técnica diverge da autorização.'],
   CYCLE_NOT_STARTED: [409, 'Inicie o ciclo antes de alocar envios após o reinício.'],
-  CYCLE_CONFIGURATION: [409, 'Defina explicitamente o ciclo atual nos dados importados.'],
+  CYCLE_CONFIGURATION: [409, 'Confira a seleção do ciclo atual e o limite numérico das ordens do ciclo.'],
   INVALID_INPUT: [400, 'Dados inválidos. Confira os campos informados.'],
   UNAUTHORIZED: [401, 'Sessão inválida. Entre novamente.'],
   FORBIDDEN: [403, 'Acesso não autorizado.'],

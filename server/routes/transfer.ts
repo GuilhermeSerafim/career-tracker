@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { csvConfirmationSchema, csvPreviewSchema, csvUploadSchema } from '../../shared/csv-upload.js';
+import { planCsvUpload, readCsvUpload } from '../services/csv-upload.js';
 import { canonicalJson, hasDisplayCapacity, restoreDisplayFloor, validateSnapshot } from '../../domain/export.js';
 import { compareLegacyRows, parseLegacyCsv, sha256 } from '../../domain/import.js';
 import type { createDatabase, RequestContext } from '../database';
@@ -7,6 +9,8 @@ import type { AuthenticatedOwner } from '../auth';
 import { SafeError } from '../errors.js';
 import { createMutation } from '../mutation.js';
 import { createImportService, importPrepareSchema } from '../services/imports.js';
+import { makeHistoricalContract } from '../services/historical-integrity.js';
+import { historicalUpload, checkHistoricalDestination, readHistoricalPackage } from '../services/historical-package.js';
 import { loadImportBasis } from '../repositories/transfers.js';
 
 /** Canonicalização de transferência separada do limite de comandos ordinários.
@@ -22,13 +26,14 @@ function boundedTransferJson(value: unknown): string {
   return serialized;
 }
 const applySchema = z.discriminatedUnion('unit', [
-  z.strictObject({ unit: z.literal('prepare'), data: importPrepareSchema }),
+  z.strictObject({ unit: z.literal('csv'), data: csvConfirmationSchema }),
+  z.strictObject({ unit: z.literal('prepare'), data: z.union([importPrepareSchema, historicalUpload]) }),
   z.strictObject({ unit: z.literal('application'), data: z.unknown() }),
   z.strictObject({ unit: z.literal('review'), data: z.unknown() }),
   z.strictObject({ unit: z.literal('complete'), data: z.unknown() }),
 ]);
 const uploadSchema = z.strictObject({ bytesBase64: z.string().max(4_000_000) });
-const previewSchema = z.union([z.strictObject({ runId: z.uuid() }), uploadSchema]);
+const previewSchema = z.union([historicalUpload, z.strictObject({ runId: z.uuid() }), csvUploadSchema.extend({ format: z.literal('csv_upload') }), uploadSchema]);
 const restoreSchema = z.strictObject({ snapshot: z.unknown() });
 export function createTransferRoute(database: ReturnType<typeof createDatabase>) {
   const imports = createImportService(database);
@@ -42,7 +47,16 @@ export function createTransferRoute(database: ReturnType<typeof createDatabase>)
       // A reserva HTTP, unidade, domínio e auditoria só confirmam juntos.
       const actor = actors.get(context.requestId);
       if (!actor) throw new SafeError('NOT_CONFIGURED');
+      if (command.unit === 'prepare' && 'format' in command.data) {
+        const { data, digest } = readHistoricalPackage(command.data.bytesBase64, actor.ownerId);
+        const tx = context.transaction;
+        const previous = await checkHistoricalDestination(tx, data, digest);
+        const prepared = await imports.prepare(actor, data.prepare, tx);
+        if (!previous || previous.needsContract) await tx.query("UPDATE career.import_runs SET unit_state=unit_state || $3::jsonb WHERE owner_id=$1 AND id=$2", [actor.ownerId, prepared.runId, { packageDigest: digest, operationId: data.operationId, packageContract: makeHistoricalContract(data) }]);
+        return { status: 200, body: prepared };
+      }
       const methods = {
+        csv: imports.applyCsv,
         prepare: imports.prepare,
         application: imports.applyApplication,
         review: imports.applyReview,
@@ -72,11 +86,25 @@ export function createTransferRoute(database: ReturnType<typeof createDatabase>)
     if (path.endsWith('/imports/preview')) {
       const parsed = previewSchema.safeParse(raw);
       if (!parsed.success) throw new SafeError('INVALID_INPUT');
+      if ('format' in parsed.data && parsed.data.format === 'historical_package') {
+        if (actor.actorKind !== 'owner') throw new SafeError('FORBIDDEN');
+        const { data, digest } = readHistoricalPackage(parsed.data.bytesBase64, actor.ownerId);
+        const existing = await database.transaction(actor, tx => checkHistoricalDestination(tx, data, digest), context);
+        return { status: 200, body: { digest, operationId: data.operationId, rows: data.applications.length, sources: data.prepare.sources.length, members: data.review.members.length, warnings: [...new Set(data.prepare.manifest.parsed.issues.map(issue => issue.code)), ...data.review.pendingIssues], resume: existing && { runId: existing.runId, reviewed: existing.reviewed, completed: existing.completed } } };
+      }
       if ('runId' in parsed.data) {
         const body = await database.transaction(
           actor,
           (tx) => imports.preview(actor, parsed.data, tx),
           context,
+        );
+        return { status: 200, body };
+      }
+      if ('format' in parsed.data) {
+        const { fileName } = parsed.data;
+        const upload = readCsvUpload(parsed.data);
+        const body = await database.transaction(
+          actor, async (tx) => csvPreviewSchema.parse(await planCsvUpload(tx, actor.ownerId, fileName, upload.parsed)), context,
         );
         return { status: 200, body };
       }

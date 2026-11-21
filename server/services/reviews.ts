@@ -6,7 +6,7 @@ import { uuidSchema, positiveVersionSchema } from '../../shared/model.js';
 import { canonicalRequestHash, createMutation, type MutationContext } from '../mutation.js';
 import type { createDatabase } from '../database';
 import { SafeError } from '../errors.js';
-import { getReview, loadReviewProjection, reviewArea } from '../repositories/reviews.js';
+import { cycleCounterFloor, getReview, loadReviewProjection, reviewArea } from '../repositories/reviews.js';
 
 const resultSchema = z.strictObject({ cycleId: uuidSchema.nullable(), reviewId: uuidSchema.nullable(), versionNumber: positiveVersionSchema.nullable(), batchVersion: positiveVersionSchema.nullable() });
 async function evidence(context: MutationContext, input: Extract<Command, { operation: 'revise_review' }>['evidence']) {
@@ -37,7 +37,8 @@ export function createReviewService(database: ReturnType<typeof createDatabase>)
         }
         if ((await context.transaction.query('SELECT id FROM career.cycles WHERE owner_id=$1', [context.ownerId])).rowCount) throw new SafeError('CYCLE_CONFIGURATION');
         const id = randomUUID();
-        await context.transaction.query('INSERT INTO career.cycles(id,owner_id,reset_date,reset_marker,is_current,next_order) SELECT $1,$2,$3,$4,true,coalesce(max(cycle_order),0)+1 FROM career.applications WHERE owner_id=$2', [id, context.ownerId, command.resetDate, command.resetMarker]);
+        const next = await cycleCounterFloor(context.transaction, context.ownerId);
+        await context.transaction.query('INSERT INTO career.cycles(id,owner_id,reset_date,reset_marker,is_current,next_order) VALUES($1,$2,$3,$4,true,$5)', [id, context.ownerId, command.resetDate, command.resetMarker, next]);
         await context.transaction.query("INSERT INTO career.creation_requests(owner_id,entity_type,client_id,payload_hash,result_cycle_id) VALUES($1,'cycle',$2,$3,$4)", [context.ownerId, command.clientId, hash, id]);
         return { status: 201, body: { cycleId: id, reviewId: null, versionNumber: null, batchVersion: null } };
       }
