@@ -24,6 +24,8 @@ Em **Entrar**, use **Esqueci minha senha** e **Enviar link de recuperação**. S
 
 ## Registrar e acompanhar candidaturas
 
+A Tabela é paginada. O Quadro abre com todos os registros ativos e carrega todas as páginas do filtro. Cada coluna agrupa pela etapa registrada. O cartão mostra separadamente o status do envio. Um envio confirmado pode estar em **Etapa não informada** quando o histórico não informa o andamento. Arraste o cartão entre colunas ou use **Mover para…**. Atualizar a etapa mantém o status e a data do envio.
+
 1. Em **Vagas**, pesquise a oportunidade antes de criar um registro. Compare empresa, anúncio, plataforma, organização no portal, código, links e trilha. Guarde os links originais e vincule anúncios equivalentes à candidatura existente quando houver evidência.
 2. Salve a oportunidade para acompanhar depois ou registre o envio já realizado. **Confirmado** exige relato ou evidência de envio. **Não confirmado** indica informação insuficiente. **Não enviado** indica ausência de envio conhecida. Informe o CV efetivamente usado se souber. Deixe o dia desconhecido ou registre a precisão disponível quando a data for parcial. O dia em que você preencheu o formulário fica no histórico de registro.
 3. No detalhe da mesma candidatura, atualize a etapa e registre retornos, entrevistas, avaliações e resultados com a evidência e a data do acontecimento, quando conhecidas. Mudanças de etapa, uma confirmação automática do portal e o reenvio de um teste mantêm a candidatura existente e não acrescentam um envio à contagem. Um relato do proprietário continua identificado como relato.

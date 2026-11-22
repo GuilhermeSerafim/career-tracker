@@ -21,10 +21,10 @@ export function Shell({ children, onLogout }: { children: ReactNode; onLogout():
   return <div className="app-shell">
     <a className="skip-link" href="#conteudo">Pular para o conteúdo</a>
     <aside className="sidebar">
-      <div className="brand">Carreira<span aria-hidden="true">↗</span><small>UM PASSO DE CADA VEZ</small></div>
+      <div className="brand">Carreira<span aria-hidden="true">↗</span></div>
       <nav className="primary-nav" aria-label="Navegação principal">
-        {destinations.map(({ path, label, symbol }, index) => <NavLink key={path} to={path} end={path === '/'}>
-          <span className="nav-index" aria-hidden="true">0{index + 1}</span><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={symbol} /></svg><span>{label}</span>
+        {destinations.map(({ path, label, symbol }) => <NavLink key={path} to={path} end={path === '/'}>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={symbol} /></svg><span>{label}</span>
         </NavLink>)}
       </nav>
       <div className="rail-foot"><span className="privacy-mark" aria-hidden="true">●</span> Espaço pessoal<small>Acesso privado</small></div>

@@ -54,7 +54,7 @@ test('rotina Hoje: vazio, envios exatos, prazos, conversa e erro503 recuperável
   await expect(page).toHaveURL(`/vagas/${scenario.applicationId}`);
   await expect(page.getByRole('heading', { name: 'Vagas', exact: true })).toBeFocused();
   const today = page.getByRole('link', { name: 'Hoje' }); await today.focus(); await page.keyboard.press('Enter');
-  await expect(page.getByRole('heading', { name: 'Seu próximo passo.' })).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Planeje seu dia' })).toBeFocused();
   await expect(goal).toContainText('1 de 5');
   const auditBefore = await api.auditCount();
   browser.failToday(true); await page.reload();
@@ -108,9 +108,19 @@ test('cadastro e filtros: confirmação única, quadro, arquivo e leitura respon
   }
   const boardButton = page.getByRole('button', { name: 'Quadro', exact: true }); await boardButton.focus(); await page.keyboard.press('Enter');
   const board = page.getByRole('region', { name: 'Quadro por etapa' });
+  const card = board.locator('article').filter({ has: page.getByRole('link', { name: 'Órbita Fictícia · Engenharia de IA' }) });
+  const triage = board.getByRole('region', { name: /^Triagem/ });
+  await card.dragTo(triage, { sourcePosition: { x: 20, y: 17 }, targetPosition: { x: 95, y: 70 } });
+  await expect(triage.getByRole('link', { name: 'Órbita Fictícia · Engenharia de IA' })).toBeVisible();
+  await page.setViewportSize({ width: 375, height: 900 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(375);
+  await board.getByLabel('Ir para uma etapa').selectOption('triagem');
+  await expect(triage.getByRole('heading', { name: /^Triagem/ })).toBeFocused();
+  await page.setViewportSize({ width: 1440, height: 900 });
   await board.getByLabel(`Etapa de ${created.displayId}`, { exact: true }).selectOption('entrevista');
   await board.getByRole('button', { name: `Mover ${created.displayId}` }).click();
-  await expect(board.getByText('Etapa registrada.')).toBeVisible();
+  await expect(board.getByRole('region', { name: /^Entrevista/ }).getByRole('link', { name: 'Órbita Fictícia · Engenharia de IA' })).toBeVisible();
+  await expect(board.getByRole('status').filter({ hasText: 'Etapa registrada.' })).toBeVisible();
   const moved = await api.request(`/api/v1/applications/${created.id}`, { headers: api.headers });
   expect(moved.json.application.submissionStatus).toBe('confirmado'); expect(moved.json.events.filter((e: { kind: string }) => e.kind === 'envio_confirmado')).toHaveLength(1); expect(moved.json.events.filter((e: { kind: string; state: string }) => e.kind === 'entrevista' && e.state === 'concluido')).toHaveLength(0);
   expect(moved.json.events.find((e: { kind: string }) => e.kind === 'entrevista')).toMatchObject({ state: 'informado', occurredDate: { precision: 'unknown', value: null } });
@@ -451,7 +461,7 @@ test('gráfico abre registros: barra e tabela preservam IDs, cobertura, paginaç
   expect(returned.status).toBe(201);
   const undated = await api.post({ operation: 'record_event', clientId: crypto.randomUUID(), application: { id: ids[26], expectedVersion: 1 }, data: { kind: 'avaliacao', state: 'concluido', occurredDate: { precision: 'unknown', value: null }, resultText: 'Avaliação fictícia sem data.', scoreValue: null, scoreUnit: null, sourceText: null, evidence: null } });
   expect(undated.status).toBe(201);
-  await page.goto('/'); await expect(page.getByRole('heading', { name: 'Seu próximo passo.' })).toBeVisible();
+  await page.goto('/'); await expect(page.getByRole('heading', { name: 'Planeje seu dia' })).toBeVisible();
   expect(requested.some((path) => /Chart-|AnalyticsPage-/.test(path))).toBe(false);
   const analyticsResponse = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/analytics' && response.status() === 200);
   await page.getByRole('link', { name: 'Análises', exact: true }).click(); await analyticsResponse;

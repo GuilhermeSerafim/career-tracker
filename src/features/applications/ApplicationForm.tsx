@@ -51,16 +51,16 @@ function Editor({ runtime, detail, onReset }: { runtime: AppRuntime; detail?: De
     {state.revising && <p className="application-notice">Revise os dados retidos e prepare uma intenção corrigida. Nada será salvo automaticamente.{state.cycleState === 'not_started' && <> O ciclo ainda não foi iniciado. “Após o marco” exige um ciclo iniciado. <Link to="/revisoes">Iniciar ciclo em Revisões</Link> e então releia os dados antes de preparar novamente sua intenção.</>}</p>}
     {state.refreshing && <p role="status">Relendo registro e acesso…</p>}
     <form onSubmit={(e) => { e.preventDefault(); if (!validDate || canonicalId) return; if (state.revising && a) setConflictOpen(true); else void draft.begin(); }}>
-      <fieldset disabled={locked}><legend>{a ? `${a.displayId} · Editar registro` : '01 / Envio'}</legend>
+      <fieldset disabled={locked}><legend>{a ? `${a.displayId} · Editar registro` : 'Envio'}</legend>
         <div className="application-grid">
           <label>Status do envio<select aria-label="Status do envio" value={f.submissionStatus} disabled={!!a} onChange={(e) => draft.patch({ submissionStatus: e.target.value as Fields['submissionStatus'] })}>{Object.entries(statuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Relação com o ciclo<select aria-label="Relação com o ciclo" value={f.cycleRelation} onChange={(e) => draft.patch({ cycleRelation: e.target.value as Fields['cycleRelation'] })}><option value="unknown">Desconhecida — fora do ciclo</option><option value="before_reset">Anterior ao marco</option><option value="after_reset">Após o marco</option></select></label>
         </div>
         <DateField label="Data do envio" value={f.submittedDate} editorState={f.dateEditor} onEditorChange={(dateEditor) => draft.patch({ dateEditor })} onChange={(submittedDate) => draft.patch({ submittedDate })} onValidityChange={setValidDate} />
         {field('evidence', 'Relato ou evidência', { multiline: true, required: f.submissionStatus === 'confirmado' })}
-        <p className="field-hint">Seu relato pode comprovar o envio. Ele não representa verificação independente no portal.</p>
+        <p className="field-hint">Informe como você sabe que a candidatura foi enviada. Seu próprio relato vale como evidência.</p>
       </fieldset>
-      <fieldset disabled={locked}><legend>02 / Oportunidade e trilha</legend><div className="application-grid">
+      <fieldset disabled={locked}><legend>Oportunidade e trilha</legend><div className="application-grid">
         {field('company', 'Empresa')}{field('title', 'Cargo')}{field('track', 'Trilha')}
         <label>Tipo de oportunidade<select aria-label="Tipo de oportunidade" value={f.kind} onChange={(e) => draft.patch({ kind: e.target.value as Fields['kind'] })}><option value="vaga">Vaga</option><option value="banco_talentos">Banco de talentos</option><option value="pipeline">Pipeline</option><option value="desconhecido">Desconhecido</option></select></label>
         {field('platform', 'Provedor da vaga', { disabled: !!a })}{field('tenant', 'Empresa no provedor (tenant)', { disabled: !!a })}{field('jobCode', 'Código da vaga', { disabled: !!a })}{field('applicationInstance', 'Ocorrência', { required: true })}

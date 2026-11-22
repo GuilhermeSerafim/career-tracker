@@ -43,6 +43,9 @@ async function mount(path = '/vagas/nova', fail = false, status = 'confirmado', 
       if (rejection) { const rejected = rejection; rejection = null; return Response.json({ error: { code: rejected.code } }, { status: rejected.status }); }
       if (conflict) { conflict = false; return Response.json({ error: { code: 'CONFLICT', details: { currentVersion: current.version, changedFields: [] } } }, { status: 409 }); }
       if (failed) return Response.json({ error: {} }, { status: 503 });
+      if (url.endsWith('/commands') && body.operation === 'update_application' && body.changes.stage && current.stage !== body.changes.stage) {
+        Object.assign(current, { stage: body.changes.stage, version: current.version + 1 });
+      }
       return Response.json({ application: current, resumeRef: null, existing: false, warnings: [], eligibilityChanges: [], affectedBatches: [], allocationPending: false });
     }
     return Response.json({}, { status: 404 });
@@ -293,6 +296,54 @@ describe('application form through guarded runtime (synthetic HTTP/Auth)', () =>
     await userEvent.click(within(board).getByRole('button', { name: 'Mover N000001' }));
     expect(h.writes[0]!.body).toEqual({ operation: 'update_application', application: { id, expectedVersion: 1 }, changes: { stage: 'entrevista' }, affectedBatches: [] });
     await h.close();
+  });
+  it('loads all submission statuses through every board cursor without changing the table population', async () => {
+    const sample = Array.from({ length: 121 }, (_, index) => ({
+      ...application(), id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, displayId: `V${index + 1}`,
+      submissionStatus: index < 20 ? 'confirmado' : index % 2 ? 'nao_enviado' : 'nao_confirmado',
+      opportunity: { ...application().opportunity, company: `Empresa ${index + 1}` },
+    }));
+    const h = await mount('/vagas', false, 'confirmado', {
+      destination: '/vagas',
+      respond(url) {
+        const all = url.searchParams.get('view') === 'all';
+        const page = url.searchParams.has('cursor') ? sample.slice(100) : sample.slice(0, all ? 100 : 20);
+        return Response.json({ items: page, total: all ? 121 : 20, nextCursor: all && page.length === 100 ? 'second-page' : null });
+      },
+    });
+    try {
+      await screen.findByRole('table', { name: 'Candidaturas' });
+      await userEvent.click(screen.getByRole('button', { name: 'Quadro' }));
+      const board = await screen.findByRole('region', { name: 'Quadro por etapa' });
+      expect(within(board).getAllByRole('article')).toHaveLength(121);
+      expect(within(board).getByRole('link', { name: 'Empresa 121 · Engenharia' })).toBeVisible();
+      expect(screen.queryByRole('navigation', { name: 'Páginas de candidaturas' })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Tabela' }));
+      expect(await screen.findByText('20 registro(s) no filtro · 20 nesta página')).toBeVisible();
+      expect(h.reads.filter((url) => url.includes('cursor=second-page'))).toHaveLength(1);
+    } finally { await h.close(); }
+  });
+  it('moves a dragged card after saving its stage and ignores canceled drag gestures', async () => {
+    const h = await mount('/vagas');
+    try {
+      await screen.findByRole('table', { name: 'Candidaturas' });
+      await userEvent.click(screen.getByRole('button', { name: 'Quadro' }));
+      const board = await screen.findByRole('region', { name: 'Quadro por etapa' });
+      const card = within(board).getByRole('article');
+      const target = within(board).getByRole('region', { name: /^Entrevista/ });
+      const dataTransfer = { setData() {}, dropEffect: 'none', effectAllowed: 'none' };
+      fireEvent.dragStart(card, { dataTransfer });
+      fireEvent.dragEnd(card, { dataTransfer });
+      fireEvent.drop(target, { dataTransfer });
+      expect(h.writes).toHaveLength(0);
+      fireEvent.dragStart(card, { dataTransfer });
+      fireEvent.dragOver(target, { dataTransfer });
+      fireEvent.drop(target, { dataTransfer });
+      expect(await within(target).findByRole('link', { name: 'Empresa Fictícia · Engenharia' })).toBeVisible();
+      expect(h.writes).toHaveLength(1);
+      expect(h.writes[0]!.body).toEqual({ operation: 'update_application', application: { id, expectedVersion: 1 }, changes: { stage: 'entrevista' }, affectedBatches: [] });
+      expect(within(target).getByText('Envio confirmado')).toBeVisible();
+    } finally { await h.close(); }
   });
   it('requires current preview and evidence before invalidating a counted submission', async () => {
     const h = await mount(`/vagas/${id}/editar`);

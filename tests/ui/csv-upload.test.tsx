@@ -59,6 +59,11 @@ it('opens from Vagas, requires explicit confirmation, and replays the same priva
     await screen.findByText('Empresa Exemplo');
     expect(screen.getByText('A fonte mudou desde a importação anterior.')).toBeInTheDocument();
     expect(screen.getAllByText('Não informada').length).toBeGreaterThan(0);
+    const reviewOnly = screen.getByRole('button', { name: 'Mostrar só registros para revisar (1)' });
+    await h.user.click(reviewOnly);
+    expect(screen.queryByText('Empresa Exemplo')).not.toBeInTheDocument();
+    expect(screen.getByText('Registro 4 · V903')).toBeInTheDocument();
+    await h.user.click(reviewOnly);
     const confirm = screen.getByRole('button', { name: 'Importar 1 linha' });
     expect(confirm).toBeDisabled();
     expect(h.calls).toHaveLength(1);

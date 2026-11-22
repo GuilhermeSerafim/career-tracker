@@ -36,7 +36,7 @@ describe('runtime and protected shell (synthetic Auth/network only)', () => {
   it('connects synchronously once before initialization yields and keeps runtime drafts through same-owner expiration', async () => {
     const h = harness(); expect(h.listeners.size).toBe(1);
     h.emit('INITIAL_SESSION', session()); const view = h.mount();
-    await screen.findByRole('heading', { name: 'Seu próximo passo.' });
+    await screen.findByRole('heading', { name: 'Planeje seu dia' });
     expect(h.port.onAuthStateChange).toHaveBeenCalledTimes(1);
     const draft = { dispose: vi.fn(), text: 'synthetic unsaved edit' };
     expect(h.runtime.retainDraft('edit', () => draft)).toBe(draft);
@@ -45,7 +45,7 @@ describe('runtime and protected shell (synthetic Auth/network only)', () => {
     expect(draft.dispose).not.toHaveBeenCalled();
     h.emit('SIGNED_IN', session());
     expect(h.runtime.retainDraft('edit', () => ({ ...draft }))).toBe(draft);
-    await screen.findByRole('heading', { name: 'Seu próximo passo.' });
+    await screen.findByRole('heading', { name: 'Planeje seu dia' });
     h.emit('SIGNED_IN', session('22222222-2222-4222-8222-222222222222'));
     expect(draft.dispose).toHaveBeenCalledOnce();
     view.unmount(); await h.runtime.dispose();
@@ -63,7 +63,7 @@ describe('runtime and protected shell (synthetic Auth/network only)', () => {
     screen.getByRole('link', { name: /Revisões/ }).focus(); await userEvent.keyboard('{Enter}');
     expect(screen.getByRole('heading', { name: 'Revisões' })).toHaveFocus();
     screen.getByRole('link', { name: /Hoje/ }).focus(); await userEvent.keyboard('{Enter}');
-    await screen.findByRole('heading', { name: 'Seu próximo passo.' });
+    await screen.findByRole('heading', { name: 'Planeje seu dia' });
     const account = screen.getByRole('button', { name: 'Conta' });
     account.focus(); await userEvent.keyboard('{Enter}');
     await userEvent.keyboard('{Tab}{Enter}');
@@ -97,7 +97,7 @@ describe('runtime and protected shell (synthetic Auth/network only)', () => {
     expect(h.transport).not.toHaveBeenCalled();
     await userEvent.type(screen.getByLabelText('Nova senha'), 'synthetic-password');
     await userEvent.click(screen.getByRole('button', { name: 'Alterar senha' }));
-    await screen.findByRole('heading', { name: 'Seu próximo passo.' });
+    await screen.findByRole('heading', { name: 'Planeje seu dia' });
     await h.runtime.dispose();
   });
   it('drains pending credentials before disposing main auth and forbids draft creation while signed out', async () => {
@@ -115,13 +115,13 @@ describe('runtime and protected shell (synthetic Auth/network only)', () => {
   it('does not show an old logout failure after a newer login expires', async () => {
     const h = harness(); h.port.signOut = async () => ({ error: new Error('synthetic unavailable') });
     h.emit('INITIAL_SESSION', session()); const view = h.mount();
-    await screen.findByRole('heading', { name: 'Seu próximo passo.' });
+    await screen.findByRole('heading', { name: 'Planeje seu dia' });
     await userEvent.click(screen.getByRole('button', { name: 'Conta' }));
     await userEvent.click(screen.getByRole('button', { name: 'Sair da conta' }));
     await screen.findByText('A sessão local foi encerrada. Não foi possível confirmar a saída no serviço.');
     await h.runtime.auth.login('synthetic@example.invalid', 'synthetic-password');
     h.emit('SIGNED_IN', session());
-    await screen.findByRole('heading', { name: 'Seu próximo passo.' });
+    await screen.findByRole('heading', { name: 'Planeje seu dia' });
     h.emit('SIGNED_OUT', null);
     expect(screen.queryByText('A sessão local foi encerrada. Não foi possível confirmar a saída no serviço.')).not.toBeInTheDocument();
     view.unmount(); await expect(h.runtime.dispose()).rejects.toThrow();

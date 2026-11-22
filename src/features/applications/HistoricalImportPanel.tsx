@@ -41,7 +41,7 @@ export function HistoricalImportPanel({ runtime, disabled }: { runtime: AppRunti
     finally { if (active()) { setBusy(false); setStatus(''); } }
   };
   return <details className="csv-panel"><summary>Importar pacote histórico</summary>
-    <p>Selecione o JSON preparado para esta conta. Para retomar uma importação interrompida, selecione o mesmo arquivo.</p>
+    <p>O JSON preparado contém as candidaturas, as fontes e a revisão histórica. A primeira aplicação exige uma lista vazia. Para retomar a mesma importação, selecione o mesmo arquivo.</p>
     <label>Pacote histórico preparado (.json)<input type="file" accept=".json,application/json" disabled={busy || disabled} onChange={e => {
       const file = e.target.files?.[0]; e.target.value = ''; void select(file);
     }} /></label>

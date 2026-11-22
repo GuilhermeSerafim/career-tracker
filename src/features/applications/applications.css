@@ -27,10 +27,6 @@
 .application-card h3 { margin: 10px 0; font-size: 1.05rem; }
 .application-card h3 a { display: inline-block; min-height: 44px; }
 .application-card select { display: block; width: 100%; margin: 8px 0; min-width: 0; }
-.application-board { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 20px; }
-.board-column { background: #edf1ff; padding: 12px; border-radius: 10px; min-width: 0; }
-.board-column h2 { font-size: 1.2rem; margin: 10px 4px 18px; }
-.board-column h2 small { padding: 3px 8px; background: var(--lime); border-radius: 4px; }
 .application-filters summary { min-height: 44px; cursor: pointer; color: var(--blue); font-weight: 700; }
 .resume-creator { margin: 20px 0; padding: 18px; border-left: 4px solid var(--lime); }
 @media(max-width: 1000px) { .application-table-region { display: none; } .application-mobile-cards { display: block; } }

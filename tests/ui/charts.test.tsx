@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../../src/app/validation';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom/vitest';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -78,7 +78,7 @@ describe('accessible evidence-backed analytics', () => {
       await waitFor(() => expect((chart('Currículo efetivamente enviado').option.yAxis as { data: string[] }).data).toContain('[2] Currículo React'));
       for (const [index, key] of [[0, id(80)], [1, id(81)]] as const) {
         const current = [...engine.instances].reverse().find((instance) => instance.element.isConnected && instance.element.getAttribute('aria-label')?.startsWith('Currículo efetivamente enviado'))!;
-        current.click({ seriesIndex: 0, dataIndex: index });
+        await act(async () => { current.click({ seriesIndex: 0, dataIndex: index }); });
         await waitFor(() => expect(screen.getByLabelText('Destino')).toHaveTextContent(encodeURIComponent(key)));
         const destination = screen.getByLabelText('Destino').textContent!;
         const button = within(cv).getByRole('button', { name: `Ver candidaturas: [${index + 1}] Currículo React · ID: ${key}` });

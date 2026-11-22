@@ -51,7 +51,7 @@ async function mount(options: { empty?: boolean; failed?: boolean; metadataFaile
   }, signInWithPassword: async () => ({ error: null }), resetPasswordForEmail: async () => ({ error: null }), updateUser: async () => ({ error: null }), signOut: async () => ({ error: null }) };
   const runtime = createAppRuntime(port, transport);
   const view = render(<MemoryRouter><App runtime={runtime} /></MemoryRouter>);
-  await screen.findByRole('heading', { name: 'Seu próximo passo.' });
+  await screen.findByRole('heading', { name: 'Planeje seu dia' });
   return { retry: () => { failed = false; }, release, close: async () => { release(); view.unmount(); await runtime.dispose(); } };
 }
 

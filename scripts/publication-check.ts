@@ -20,7 +20,7 @@ const groups = [
   ['src/app', 'App.tsx Shell.tsx query.ts runtime.ts validation.ts'],
   ['src/components', 'AsyncState.tsx ConflictDialog.tsx DateField.tsx SafeLink.tsx session.css'],
   ['src/features/analytics', 'AnalyticsPage.tsx Chart.tsx ChartTable.tsx analytics.css metadata.ts options.ts'],
-  ['src/features/applications', 'ActivityForm.tsx ApplicationActions.tsx ApplicationForm.tsx CsvImportPage.tsx DetailPage.tsx Filters.tsx HistoricalImportPanel.tsx historical-import.ts ListPage.tsx ResumeCreator.tsx application-data.ts applications.css'],
+  ['src/features/applications', 'ActivityForm.tsx ApplicationActions.tsx ApplicationBoard.tsx ApplicationForm.tsx CsvImportPage.tsx DetailPage.tsx Filters.tsx HistoricalImportPanel.tsx historical-import.ts ListPage.tsx ResumeCreator.tsx application-data.ts applications.css board.css'],
   ['src/features/auth', 'LoginPage.tsx'],
   ['src/features/reviews', 'EditorActions.tsx ReviewsPage.tsx editor.ts reviews.css'],
   ['src/features/settings', 'AgentCredentials.tsx SettingsPage.tsx credential-session.ts transfer-client.ts'],

@@ -130,11 +130,11 @@ export function CsvImportPage({ runtime }: { runtime: AppRuntime }) {
     <section className="page-intro">
       <Link className="text-action csv-back" to="/vagas">Voltar para Vagas</Link>
       <h1 tabIndex={-1}>Importar candidaturas</h1>
-      <p>Confira o CSV legado antes de inserir novas candidaturas no seu espaço privado.</p>
+      <p>Confira os dados antes de gravar. Use o pacote histórico para trazer também os arquivos de origem e a revisão de 30.</p>
     </section>
 
     <section className="csv-panel" aria-labelledby="csv-file-title">
-      <h2 id="csv-file-title">Arquivo de origem</h2>
+      <h2 id="csv-file-title">Importação simples por CSV</h2>
       <p id="csv-format">Use um CSV no formato legado, em UTF-8, com até 1 MiB e {MAX_CSV_UPLOAD_ROWS} registros.</p>
       <p>A importação preserva IDs, ordem registrada, evidências e referências. Datas vazias ficam desconhecidas. Vínculos com o ciclo atual e decisões sobre etapas, lotes ou revisões históricas exigem análise própria.</p>
       <form onSubmit={(event) => { event.preventDefault(); void check(); }}>
@@ -191,12 +191,15 @@ function Totals({ entries }: { entries: [number, string][] }) {
 
 function PreviewRows({ data }: { data: CsvPreview }) {
   const [page, setPage] = useState(0);
+  const [onlyReview, setOnlyReview] = useState(false);
   if (!data.rows.length) return null;
-  const totalPages = Math.ceil(data.rows.length / pageSize);
+  const rows = onlyReview ? data.rows.filter(({ status }) => status !== 'eligible' && status !== 'unchanged') : data.rows;
+  const totalPages = Math.ceil(rows.length / pageSize);
   return <>
     <h3>Registros do CSV</h3>
-    <ol className="csv-records" role="list" start={page * pageSize + 2}>{data.rows.slice(page * pageSize, (page + 1) * pageSize).map((row) =>
-      <li key={row.number}>
+    {data.totals.review > 0 && <button type="button" aria-pressed={onlyReview} onClick={() => { setOnlyReview(!onlyReview); setPage(0); }}>Mostrar só registros para revisar ({data.totals.review})</button>}
+    <ol className="csv-records" role="list">{rows.slice(page * pageSize, (page + 1) * pageSize).map((row) =>
+      <li key={row.number} value={row.number}>
         <div className="csv-record-heading">
           <div><p className="csv-record-number">Registro {row.number}{row.legacyId && ` · ${row.legacyId}`}</p><h4>{row.company || 'Não informada'}</h4><p>{row.title || 'Cargo não informado'}</p></div>
           <strong className={`csv-row-status csv-row-${row.status}`}>{rowLabels[row.status]}</strong>
