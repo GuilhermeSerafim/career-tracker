@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { DragEvent } from 'react';
 import { Link } from 'react-router';
 import type { Stage } from '../../../shared/model';
@@ -12,7 +12,7 @@ import './board.css';
 const stageOrder = Object.keys(stages) as Stage[];
 
 interface DraggedCard { id: string; stage: Stage; move(stage: Stage): void }
-interface BoardMove { id: string; stage: Stage; focus: boolean }
+interface MovePreview { stage: Stage; version: number; confirmed: boolean }
 
 export function ApplicationBoard({ runtime, items }: { runtime: AppRuntime; items: Application[] }) {
   const prefix = useId();
@@ -20,20 +20,48 @@ export function ApplicationBoard({ runtime, items }: { runtime: AppRuntime; item
   const drag = useRef<DraggedCard | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [target, setTarget] = useState<Stage | null>(null);
-  const [lastMove, setLastMove] = useState<BoardMove>();
-  const restoredFocus = useRef<BoardMove | undefined>(undefined);
+  const [moves, setMoves] = useState<Record<string, MovePreview>>({});
+  const [lastMove, setLastMove] = useState('');
+  const notified = useRef(new Map<string, number>());
+  const focusAfterMove = useRef<string | null>(null);
   const grouped = new Map(stageOrder.map((stage) => [stage, [] as Application[]]));
-  for (const item of items) grouped.get(item.stage)!.push(item);
+  for (const item of items) {
+    const preview = moves[item.id];
+    const displayStage = preview && (preview.confirmed ? preview.version > item.version : preview.version >= item.version)
+      ? preview.stage : item.stage;
+    grouped.get(displayStage)!.push(item);
+  }
 
   useEffect(() => {
-    if (!lastMove?.focus || restoredFocus.current === lastMove || document.activeElement !== document.body) return;
-    const card = [...(scroller.current?.querySelectorAll<HTMLElement>('[data-board-card]') ?? [])]
-      .find((item) => item.dataset.boardCard === lastMove.id && item.dataset.stage === lastMove.stage);
-    if (card) {
-      restoredFocus.current = lastMove;
-      card.querySelector('a')?.focus();
+    const id = focusAfterMove.current;
+    if (!id) return;
+    if (document.activeElement === document.body) {
+      const card = [...(scroller.current?.querySelectorAll<HTMLElement>('[data-board-card]') ?? [])]
+        .find((item) => item.dataset.boardCard === id);
+      card?.querySelector('a')?.focus();
     }
-  }, [items, lastMove]);
+    if (moves[id]?.confirmed !== false) focusAfterMove.current = null;
+  }, [items, moves]);
+
+  const onMoveState = useCallback((id: string, version: number, preview?: MovePreview) => {
+    setMoves(current => {
+      const existing = current[id];
+      if (preview && (!preview.confirmed || preview.version > version)) {
+        if (existing?.stage === preview.stage && existing.version === preview.version && existing.confirmed === preview.confirmed) return current;
+        return { ...current, [id]: preview };
+      }
+      if (!existing || existing.confirmed && existing.version > version) return current;
+      const remaining = { ...current };
+      delete remaining[id];
+      return remaining;
+    });
+    if (preview?.confirmed && (notified.current.get(id) ?? 0) < preview.version) {
+      notified.current.set(id, preview.version);
+      setLastMove('Etapa registrada.');
+    } else if (preview && !preview.confirmed) {
+      setLastMove('');
+    }
+  }, []);
 
   function start(event: DragEvent<HTMLElement>, card: DraggedCard) {
     event.dataTransfer.setData('application/x-career-stage-card', 'move');
@@ -95,7 +123,7 @@ export function ApplicationBoard({ runtime, items }: { runtime: AppRuntime; item
         </select>
       </label>
     </div>
-    <p className="stage-board-feedback" role="status">{lastMove && <>Etapa registrada.</>}</p>
+    <p className="stage-board-feedback" role="status">{lastMove}</p>
     <div className="stage-board-scroller" ref={scroller} role="region" aria-label="Colunas de etapas" tabIndex={0}>
       <div className="stage-board-columns">
         {stageOrder.map((stage) => {
@@ -104,9 +132,9 @@ export function ApplicationBoard({ runtime, items }: { runtime: AppRuntime; item
           return <section key={stage} id={id} aria-labelledby={`${id}-heading`} className="stage-board-column"
             data-target={target === stage} onDragOver={(event) => over(event, stage)} onDrop={(event) => drop(event, stage)}>
             <h2 id={`${id}-heading`} tabIndex={-1}>{stages[stage]} <small>{group.length}</small></h2>
-            {group.length ? group.map((a) => <BoardCard key={`${a.id}:${a.version}`} runtime={runtime} application={a}
+            {group.length ? group.map((a) => <BoardCard key={`${a.id}:${a.version}`} runtime={runtime} application={a} displayStage={stage}
               dragging={dragging === a.id} onDragStart={start} onDragEnd={end}
-              onSaved={(move) => { setLastMove(move); void runtime.query.invalidateQueries({ queryKey: ['applications'] }); }} />)
+              onMoveState={onMoveState} rememberFocus={(id) => { focusAfterMove.current = id; }} />)
               : <p className="stage-board-empty">Nenhum cartão nesta etapa</p>}
           </section>;
         })}
@@ -115,13 +143,15 @@ export function ApplicationBoard({ runtime, items }: { runtime: AppRuntime; item
   </section>;
 }
 
-function BoardCard({ runtime, application: a, dragging, onDragStart, onDragEnd, onSaved }: {
-  runtime: AppRuntime; application: Application; dragging: boolean; onDragStart(event: DragEvent<HTMLElement>, card: DraggedCard): void;
-  onDragEnd(): void; onSaved(move: BoardMove): void;
+function BoardCard({ runtime, application: a, displayStage, dragging, onDragStart, onDragEnd, onMoveState, rememberFocus }: {
+  runtime: AppRuntime; application: Application; displayStage: Stage; dragging: boolean; onDragStart(event: DragEvent<HTMLElement>, card: DraggedCard): void;
+  onDragEnd(): void; onMoveState(id: string, version: number, preview?: MovePreview): void; rememberFocus(id: string | null): void;
 }) {
   const draftKey = `board:${a.id}`;
   const [draft] = useState(() => {
-    const create = () => createFormDraft(runtime, { application: a, links: [], resumeRefs: [], tasks: [], events: [], contacts: [], evidence: [], affectedBatches: [] });
+    const create = () => createFormDraft(runtime,
+      { application: a, links: [], resumeRefs: [], tasks: [], events: [], contacts: [], evidence: [], affectedBatches: [] },
+      () => { void runtime.query.invalidateQueries({ queryKey: ['applications'] }); });
     const retained = runtime.retainDraft(draftKey, create);
     const { detail, intent } = retained.getSnapshot();
     if (detail?.application.version !== a.version && (!intent || intent.getSnapshot().status === 'saved')) {
@@ -137,23 +167,23 @@ function BoardCard({ runtime, application: a, dragging, onDragStart, onDragEnd, 
     fields: { Etapa: stages[currentVersion.fields.Etapa as Stage] ?? currentVersion.fields.Etapa ?? null },
   } : null, [currentVersion]);
   const [conflictOpen, setConflictOpen] = useState(true);
-  const notified = useRef(false);
-  const restoreFocus = useRef(false);
-  const locked = Boolean(save || state.canonicalId);
+  const confirmed = save?.status === 'saved' ? save.result?.application : null;
+  const command = save?.status === 'saving' && save.draft?.operation === 'update_application' ? save.draft : null;
+  const locked = Boolean(save || state.canonicalId || displayStage !== a.stage);
   useEffect(() => {
-    if (save?.status !== 'saved' || notified.current) return;
-    notified.current = true;
-    onSaved({ id: a.id, stage: save.result?.application?.stage ?? state.fields.stage, focus: restoreFocus.current });
-  }, [a.id, onSaved, save, state.fields.stage]);
+    const preview = confirmed ? { stage: confirmed.stage, version: confirmed.version, confirmed: true }
+      : command?.changes.stage ? { stage: command.changes.stage, version: command.application.expectedVersion, confirmed: false } : undefined;
+    onMoveState(a.id, a.version, preview);
+  }, [a.id, a.version, command, confirmed, onMoveState]);
 
   function move(stage: Stage, focus: boolean) {
     if (draft.getSnapshot().intent || state.canonicalId || stage === a.stage) return;
-    restoreFocus.current = focus;
+    rememberFocus(focus ? a.id : null);
     draft.patch({ stage });
     void draft.begin({ operation: 'update_application', application: { id: a.id, expectedVersion: a.version }, changes: { stage }, affectedBatches: [] });
   }
 
-  return <article className="stage-board-card" data-board-card={a.id} data-stage={a.stage} data-dragging={dragging} draggable={!locked}
+  return <article className="stage-board-card" data-board-card={a.id} data-stage={displayStage} data-dragging={dragging} draggable={!locked}
     onDragStart={(event) => {
       if (locked || event.target !== event.currentTarget) { event.preventDefault(); return; }
       onDragStart(event, { id: a.id, stage: a.stage, move: (stage) => move(stage, false) });
@@ -172,10 +202,11 @@ function BoardCard({ runtime, application: a, dragging, onDragStart, onDragEnd, 
       <button type="button" aria-label={`Mover ${a.displayId}`} disabled={locked || state.fields.stage === a.stage}
         onClick={(event) => move(state.fields.stage, document.activeElement === event.currentTarget)}>Mover</button>
     </div>
-    {save?.status === 'saving' && <p role="status">Movendo para {stages[state.fields.stage]}…</p>}
+    {command && <p role="status">Salvando etapa…</p>}
+    {save?.status === 'unavailable' && <p>A mudança voltou à etapa anterior. Repita o movimento para confirmar o resultado.</p>}
     {save?.error && <p role="alert">{save.error.message}</p>}
     {state.error && <p role="alert">{state.error}</p>}
-    {save && ['unavailable', 'error', 'editing'].includes(save.status) && <button type="button" onClick={() => { void state.intent!.save(); }}>Repetir movimento original</button>}
+    {save && ['unavailable', 'error', 'editing'].includes(save.status) && <button type="button" onClick={(event) => { rememberFocus(document.activeElement === event.currentTarget ? a.id : null); void state.intent!.save(); }}>Repetir movimento original</button>}
     {save?.status === 'refresh-required' && <button type="button" onClick={() => { void state.intent!.refresh(); }}>Reler acesso</button>}
     {save && ['conflict', 'refresh-required'].includes(save.status) && <><button type="button" onClick={() => setConflictOpen(true)}>Comparar etapa</button>
       {conflictOpen && <ConflictDialog local={{ Etapa: stages[state.fields.stage] }} current={comparison} reapplyBlocked={Boolean(state.canonicalId)}

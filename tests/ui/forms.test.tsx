@@ -17,7 +17,7 @@ const id = '22222222-2222-4222-8222-222222222222';
 const opportunityId = '33333333-3333-4333-8333-333333333333';
 const unknown = { precision: 'unknown', value: null };
 function application() { return { id, version: 1, displayId: 'N000001', submissionStatus: 'confirmado', submittedDate: unknown, stage: 'desconhecida', countingEligible: true, canonicalApplicationId: null, archivedAt: null, cycleRelation: 'unknown', cycleOrder: null, stack: [], discoveryChannel: null, submissionPlatform: null, resumeIds: [], track: 'AI Builder', applicationInstance: 'initial', notes: null, eventIds: [], historyApplicationIds: [id], opportunity: { id: opportunityId, version: 1, company: 'Empresa Fictícia', title: 'Engenharia', platform: null, tenant: null, jobCode: null, jobKey: null, kind: 'vaga', seniority: null, modality: null, description: null, stack: [] } }; }
-async function mount(path = '/vagas/nova', fail = false, status = 'confirmado', pagination?: { destination: string; respond(url: URL): Response }) {
+async function mount(path = '/vagas/nova', fail: boolean | 'network' = false, status = 'confirmado', pagination?: { destination: string; respond(url: URL): Response }) {
   let callback!: (event: AuthChangeEvent, session: Session | null) => void;
   const session = { access_token: 'synthetic', user: { id: owner } } as Session;
   let failed = fail;
@@ -25,13 +25,14 @@ async function mount(path = '/vagas/nova', fail = false, status = 'confirmado', 
   let rejection: { status: number; code: string } | null = null; let readFailure = false;
   const resumes: { id: string; label: string }[] = [];
   let heldRead: Promise<void> | null = null;
+  let heldWrite: Promise<void> | null = null;
   const writes: { body: Command; key: string }[] = [];
   const reads: string[] = [];
   const current = application();
   current.submissionStatus = status;
   const transport: typeof fetch = async (input, init) => {
     const url = String(input); reads.push(url);
-    if (heldRead && (url.startsWith('/api/v1/batches') || url === `/api/v1/applications/${id}`)) await heldRead;
+    if (heldRead && (url.startsWith('/api/v1/batches') || url === `/api/v1/applications/${id}` || url.startsWith('/api/v1/applications?'))) await heldRead;
     if (url.endsWith('/health')) return Response.json({ status: 'ok' });
     if (url.startsWith('/api/v1/resume-refs')) return Response.json({ items: resumes, total: resumes.length, nextCursor: null });
     if (url.startsWith('/api/v1/batches')) return readFailure ? Response.json({ error: {} }, { status: 503 }) : Response.json({ state: 'not_started', cycleId: null, items: [] });
@@ -40,8 +41,10 @@ async function mount(path = '/vagas/nova', fail = false, status = 'confirmado', 
     if (url.endsWith('/commands')) {
       const body = JSON.parse(init!.body as string) as Command;
       writes.push({ body, key: (init!.headers as Record<string, string>)['Idempotency-Key']! });
+      if (heldWrite) await heldWrite;
       if (rejection) { const rejected = rejection; rejection = null; return Response.json({ error: { code: rejected.code } }, { status: rejected.status }); }
       if (conflict) { conflict = false; return Response.json({ error: { code: 'CONFLICT', details: { currentVersion: current.version, changedFields: [] } } }, { status: 409 }); }
+      if (failed === 'network') throw new TypeError('Fixture connection lost');
       if (failed) return Response.json({ error: {} }, { status: 503 });
       if (url.endsWith('/commands') && body.operation === 'update_application' && body.changes.stage && current.stage !== body.changes.stage) {
         Object.assign(current, { stage: body.changes.stage, version: current.version + 1 });
@@ -54,7 +57,12 @@ async function mount(path = '/vagas/nova', fail = false, status = 'confirmado', 
   const runtime = createAppRuntime(port, transport);
   const view = render(<MemoryRouter initialEntries={[path]}>{pagination && <Link to={pagination.destination}>Outra seleção</Link>}<App runtime={runtime} /></MemoryRouter>);
   await screen.findByRole('heading', { name: 'Vagas' });
-  return { runtime, writes, reads, current, holdRead: () => { let release!: () => void; heldRead = new Promise<void>((resolve) => { release = resolve; }); return () => { heldRead = null; release(); }; }, reject: (status: number, code: string) => { rejection = { status, code }; }, failRead: (value: boolean) => { readFailure = value; }, addResume: async () => { resumes.push({ id: opportunityId, label: 'CV fictício' }); await act(() => runtime.query.invalidateQueries({ queryKey: ['resume-refs'] })); }, conflict: () => { conflict = true; }, similar: () => { similar = true; }, retry: () => { failed = false; }, expire: () => act(() => runtime.auth.expire()), reenter: () => act(() => callback('SIGNED_IN', session)), close: async () => { view.unmount(); await runtime.dispose(); } };
+  const holdWrite = () => {
+    let release!: () => void;
+    heldWrite = new Promise<void>(resolve => { release = resolve; });
+    return () => { heldWrite = null; release(); };
+  };
+  return { runtime, writes, reads, current, holdWrite, holdRead: () => { let release!: () => void; heldRead = new Promise<void>((resolve) => { release = resolve; }); return () => { heldRead = null; release(); }; }, reject: (status: number, code: string) => { rejection = { status, code }; }, failRead: (value: boolean) => { readFailure = value; }, addResume: async () => { resumes.push({ id: opportunityId, label: 'CV fictício' }); await act(() => runtime.query.invalidateQueries({ queryKey: ['resume-refs'] })); }, conflict: () => { conflict = true; }, similar: () => { similar = true; }, retry: () => { failed = false; }, expire: () => act(() => runtime.auth.expire()), reenter: () => act(() => callback('SIGNED_IN', session)), close: async () => { view.unmount(); await runtime.dispose(); } };
 }
 
 describe('application form through guarded runtime (synthetic HTTP/Auth)', () => {
@@ -344,6 +352,52 @@ describe('application form through guarded runtime (synthetic HTTP/Auth)', () =>
       expect(h.writes[0]!.body).toEqual({ operation: 'update_application', application: { id, expectedVersion: 1 }, changes: { stage: 'entrevista' }, affectedBatches: [] });
       expect(within(target).getByText('Envio confirmado')).toBeVisible();
     } finally { await h.close(); }
+  });
+  it('moves a dragged card before any response, rolls back after failure and retries the same request', async () => {
+    const h = await mount('/vagas', 'network');
+    let release = h.holdWrite();
+    let releaseRead = () => {};
+    try {
+      await userEvent.click(await screen.findByRole('button', { name: 'Quadro' }));
+      const board = await screen.findByRole('region', { name: 'Quadro por etapa' });
+      const from = within(board).getByRole('region', { name: /^Etapa não informada/ });
+      const to = within(board).getByRole('region', { name: /^Entrevista/ });
+      const dataTransfer = { setData() {}, dropEffect: 'none', effectAllowed: 'none' };
+      fireEvent.dragStart(within(from).getByRole('article'), { dataTransfer });
+      fireEvent.dragOver(to, { dataTransfer });
+      fireEvent.drop(to, { dataTransfer });
+      expect(within(to).getByRole('link', { name: 'Empresa Fictícia · Engenharia' })).toBeVisible();
+      expect(within(to).getByRole('status')).toHaveTextContent(/movendo|salvando/i);
+      expect(within(from).queryByRole('article')).toBeNull();
+      expect(h.current.stage).toBe('desconhecida');
+      await act(async () => release());
+      const retry = await within(from).findByRole('button', { name: 'Repetir movimento original' });
+      expect(within(to).queryByRole('article')).toBeNull();
+      h.retry();
+      release = h.holdWrite();
+      releaseRead = h.holdRead();
+      fireEvent.click(retry);
+      expect(within(to).getByRole('article')).toBeVisible();
+      await act(async () => release());
+      expect(await screen.findByText('Etapa registrada.', { exact: true })).toBeVisible();
+      expect(within(to).getByRole('article')).toBeVisible();
+      expect(h.writes).toHaveLength(2);
+      expect(h.writes[1]).toEqual(h.writes[0]);
+    } finally { release(); releaseRead(); await h.close(); }
+  });
+  it('refreshes the table if the move finishes after switching away from the board', async () => {
+    const h = await mount('/vagas');
+    const release = h.holdWrite();
+    try {
+      await userEvent.click(await screen.findByRole('button', { name: 'Quadro' }));
+      await userEvent.selectOptions(await screen.findByLabelText('Etapa de N000001'), 'entrevista');
+      await userEvent.click(screen.getByRole('button', { name: 'Mover N000001' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Tabela' }));
+      const table = await screen.findByRole('table', { name: 'Candidaturas' });
+      expect(within(table).getByText('Etapa não informada')).toBeVisible();
+      await act(async () => release());
+      expect(await within(table).findByText('Entrevista')).toBeVisible();
+    } finally { release(); await h.close(); }
   });
   it('requires current preview and evidence before invalidating a counted submission', async () => {
     const h = await mount(`/vagas/${id}/editar`);

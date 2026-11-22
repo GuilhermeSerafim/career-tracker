@@ -76,7 +76,7 @@ export function formCommand(fields: Fields, detail?: Detail): Command {
 }
 
 /** Raw business input lives above the route boundary; command intentions are frozen separately. */
-export function createFormDraft(runtime: AppRuntime, initial?: Detail) {
+export function createFormDraft(runtime: AppRuntime, initial?: Detail, onSaved?: () => void) {
   let state = { fields: fieldsFrom(initial), detail: initial, savedDetail: initial, canonicalId: initial?.application.canonicalApplicationId ?? null, uncertain: false, intent: null as ReturnType<typeof createSaveIntent<Command, ApplicationResult>> | null, error: '', checking: false, refreshing: false, revisionRequested: false, revising: false, cycleState: '', candidates: [] as Application[] };
   let latest = initial;
   let disposed = false;
@@ -140,6 +140,7 @@ export function createFormDraft(runtime: AppRuntime, initial?: Detail) {
         disconnect = intent.subscribe(() => {
           const snapshot = intent.getSnapshot();
           update({ ...(state.revising && !snapshot.current ? { revising: false } : {}), uncertain: snapshot.status === 'unavailable' ? true : ['saved', 'conflict'].includes(snapshot.status) ? false : state.uncertain });
+          if (snapshot.status === 'saved') onSaved?.();
         }); update({ intent }); void intent.save();
       } catch { update({ checking: false, error: 'Não foi possível preparar o registro. Confira os campos ou tente novamente. Confirmação, nova ocorrência e correção de data/ciclo exigem relato ou evidência. Informe apenas links HTTP(S) válidos.' }); }
     },
